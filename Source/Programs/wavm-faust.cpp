@@ -38,9 +38,8 @@ ztimedmap GUI::gTimedZoneMap;
 
 void showHelp()
 {
-	std::cerr << "Usage: wavm [switches] [programfile] [--] [arguments]" << std::endl;
+	std::cerr << "Usage: wavm-faust [switches] [programfile]" << std::endl;
 	std::cerr << "  in.wast|in.wasm\t\tSpecify program file (.wast/.wasm)" << std::endl;
-	std::cerr << "  -f|--function name\t\tSpecify function name to run in module rather than main" << std::endl;
 	std::cerr << "  -c|--check\t\t\tExit after checking that the program is valid" << std::endl;
 	std::cerr << "  -d|--debug\t\t\tWrite additional debug information to stdout" << std::endl;
 	std::cerr << "  --\t\t\t\tStop parsing arguments" << std::endl;

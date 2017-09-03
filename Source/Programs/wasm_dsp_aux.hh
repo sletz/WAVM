@@ -25,8 +25,6 @@
 #include <string>
 #include <vector>
 
-#include "faust/dsp/dsp.h"
-
 #include "Inline/BasicTypes.h"
 #include "Inline/Floats.h"
 #include "Inline/Timing.h"
@@ -35,6 +33,8 @@
 #include "IR/Module.h"
 #include "IR/Validate.h"
 #include "Runtime/Runtime.h"
+
+#include "faust/dsp/dsp.h"
 
 using namespace Runtime;
 
@@ -49,14 +49,11 @@ class wasm_dsp : public dsp {
     
     private:
     
-        int ins;
-        int outs;
+        int fWasmInputs;        // Index in wasm memory
+        int fWasmOutputs;       // Index in wasm memory
     
-        FAUSTFLOAT** dspInChannnels;
-        FAUSTFLOAT** dspOutChannnels;
-    
-        int numIn;
-        int numOut;
+        FAUSTFLOAT** fInputs;   // Wasm memory mapped to pointers
+        FAUSTFLOAT** fOutputs;  // Wasm memory mapped to pointers
     
         ModuleInstance* fModuleInstance;
     
@@ -74,10 +71,56 @@ class wasm_dsp : public dsp {
     
         JSONUIDecoder* fDecoder;
     
-        FAUSTFLOAT getParamValue(int index);
-        void setParamValue(int index, FAUSTFLOAT value);
-        std::string getJSON(U8* base_ptr);
+        // Internal helper methods
     
+        FAUSTFLOAT getParamValue(int index)
+        {
+            std::vector<Value> invokeArgs;
+            Value dsp_arg = DSP_BASE;
+            Value index_arg = index;
+            invokeArgs.push_back(dsp_arg);
+            invokeArgs.push_back(index_arg);
+            auto functionResult = invokeFunction(fGetParamValue, invokeArgs);
+            return (sizeof(FAUSTFLOAT) == 4) ? functionResult.f32 : functionResult.f64;
+        }
+        
+        void setParamValue(int index, FAUSTFLOAT value)
+        {
+            std::vector<Value> invokeArgs;
+            Value dsp_arg = DSP_BASE;
+            Value index_arg = index;
+            Value value_arg = value;
+            invokeArgs.push_back(dsp_arg);
+            invokeArgs.push_back(index_arg);
+            invokeArgs.push_back(value_arg);
+            invokeFunction(fSetParamValue, invokeArgs);
+        }
+    
+        void computeAux(int count)
+        {
+            // Call wasm compute
+            std::vector<Value> invokeArgs;
+            Value dsp_arg = DSP_BASE;
+            Value count_arg = count;
+            Value ins_arg = I32(fWasmInputs);
+            Value outs_arg = I32(fWasmOutputs);
+            invokeArgs.push_back(dsp_arg);
+            invokeArgs.push_back(count_arg);
+            invokeArgs.push_back(ins_arg);
+            invokeArgs.push_back(outs_arg);
+            invokeFunction(fCompute, invokeArgs);
+        }
+    
+        std::string getJSON(U8* base_ptr)
+        {
+            int i = 0;
+            std::string json = "";
+            while (base_ptr[i] != 0) {
+                json += base_ptr[i++];
+            }
+            return json;
+        }
+ 
         // wasm_dsp objects are allocated using wasm_dsp_factory::createDSPInstance();
         virtual ~wasm_dsp();
     
