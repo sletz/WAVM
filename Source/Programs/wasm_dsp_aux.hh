@@ -40,7 +40,7 @@ using namespace Runtime;
 
 #define DSP_BASE 0  // method 'dsp' parameter is actually 0
 
-class JSONUIDecoder;
+struct JSONUIDecoder;
 
 /**
  * DSP instance class with methods.

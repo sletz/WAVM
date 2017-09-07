@@ -16,6 +16,9 @@ set_target_properties(wavm PROPERTIES FOLDER Programs)
 
 # Faust/JACK/GTK specific needs
 
+include_directories(/usr/local/include)
+link_directories(/usr/local/lib)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK2 REQUIRED gtk+-2.0)
 
