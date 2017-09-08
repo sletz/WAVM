@@ -91,9 +91,6 @@ wasm_dsp::wasm_dsp(ModuleInstance* instance)
     int sample_size = sizeof(FAUSTFLOAT);
     int buffer_size = 4096; // Max
     
-    std::cout << "fNumInputs " << fDecoder->fNumInputs << std::endl;
-    std::cout << "fNumOutputs " << fDecoder->fNumOutputs << std::endl;
-    
     fInputs = new FAUSTFLOAT*[fDecoder->fNumInputs];
     fOutputs = new FAUSTFLOAT*[fDecoder->fNumOutputs];
     
