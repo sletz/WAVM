@@ -122,7 +122,7 @@ namespace LLVMJIT
 		, functionInstance(inFunctionInstance)
 		, llvmFunction(inLLVMFunction)
 		, irBuilder(context)
-		{}
+        {}
 
 		void emit();
 
@@ -784,7 +784,6 @@ namespace LLVMJIT
 				auto pointer = coerceByteIndexToPointer(byteIndex,imm.offset,llvmMemoryType); \
 				auto load = irBuilder.CreateLoad(pointer); \
 				load->setAlignment(1<<imm.alignmentLog2); \
-				load->setVolatile(true); \
 				push(conversionOp(load,asLLVMType(ValueType::valueTypeId))); \
 			}
 		#define EMIT_STORE_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
@@ -795,7 +794,6 @@ namespace LLVMJIT
 				auto pointer = coerceByteIndexToPointer(byteIndex,imm.offset,llvmMemoryType); \
 				auto memoryValue = conversionOp(value,llvmMemoryType); \
 				auto store = irBuilder.CreateStore(memoryValue,pointer); \
-				store->setVolatile(true); \
 				store->setAlignment(1<<imm.alignmentLog2); \
 			}
 			
