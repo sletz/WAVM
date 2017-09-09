@@ -2,11 +2,11 @@
 
 Faust DSP programs compiled as wasm modules can be run using the WAVM WebAssembly Virtual machine. 
 
-## wavm-faust
+## faust-wavm
 
 Assuming you have installed the Faust2 branch, compile WAVM by following the standard procedure explained [here](https://github.com/AndrewScheidecker/WAVM). An additional **wavm-faust** tool using JACK for audio and GTK for the GUI will be compiled:
 
-`wavm-faust [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm`
+`faust-wavm [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm`
 
 Here are the available options:
 
@@ -20,3 +20,9 @@ With the JACK server running, the program can simply be tested by compiling a wa
 ## Known issues
 
 Polyphonic mode is not yet working correctly. 
+
+## faustbench-wavm
+
+Benckmarking the Faust generated wasm code can be done using the **faustbench-wavm** tool:
+
+`faustbench-wavm foo.wasm`

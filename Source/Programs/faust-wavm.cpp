@@ -36,15 +36,6 @@ using namespace Runtime;
 std::list<GUI*> GUI::fGuiList;
 ztimedmap GUI::gTimedZoneMap;
 
-void showHelp()
-{
-	std::cerr << "Usage: wavm-faust [switches] [programfile]" << std::endl;
-	std::cerr << "  in.wast|in.wasm\t\tSpecify program file (.wast/.wasm)" << std::endl;
-	std::cerr << "  -c|--check\t\t\tExit after checking that the program is valid" << std::endl;
-	std::cerr << "  -d|--debug\t\t\tWrite additional debug information to stdout" << std::endl;
-	std::cerr << "  --\t\t\t\tStop parsing arguments" << std::endl;
-}
-
 struct RootResolver : Resolver
 {
 	std::map<std::string,Resolver*> moduleNameToResolverMap;
@@ -112,38 +103,37 @@ struct RootResolver : Resolver
 int mainBody(const char* filename_aux, int argc, char** args)
 {
     if (isopt(args, "-h") || isopt(args, "-help")) {
-        cout << "wavm-faust [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm" << endl;
+        cout << "faust-wavm [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm" << endl;
         exit(EXIT_FAILURE);
     }
     
-	Module module;
-	if(filename_aux)
-	{
-		if(!loadModule(filename_aux,module)) { return EXIT_FAILURE; }
-	}
-	else
-	{
-		showHelp();
-		return EXIT_FAILURE;
-	}
+    Module module;
+    if(filename_aux)
+    {
+        if(!loadModule(filename_aux,module)) { return EXIT_FAILURE; }
+    }
+    else
+    {
+        return EXIT_FAILURE;
+    }
 
-	// Link and instantiate the module.
-	RootResolver rootResolver;
-	LinkResult linkResult = linkModule(module,rootResolver);
-	if(!linkResult.success)
-	{
-		std::cerr << "Failed to link module:" << std::endl;
-		for(auto& missingImport : linkResult.missingImports)
-		{
-			std::cerr << "Missing import: module=\"" << missingImport.moduleName
-				<< "\" export=\"" << missingImport.exportName
-				<< "\" type=\"" << asString(missingImport.type) << "\"" << std::endl;
-		}
-		return EXIT_FAILURE;
-	}
-	ModuleInstance* moduleInstance = instantiateModule(module,std::move(linkResult.resolvedImports));
-	if(!moduleInstance) { return EXIT_FAILURE; }
-	Emscripten::initInstance(module,moduleInstance);
+    // Link and instantiate the module.
+    RootResolver rootResolver;
+    LinkResult linkResult = linkModule(module,rootResolver);
+    if(!linkResult.success)
+    {
+        std::cerr << "Failed to link module:" << std::endl;
+        for(auto& missingImport : linkResult.missingImports)
+        {
+            std::cerr << "Missing import: module=\"" << missingImport.moduleName
+                << "\" export=\"" << missingImport.exportName
+                << "\" type=\"" << asString(missingImport.type) << "\"" << std::endl;
+        }
+        return EXIT_FAILURE;
+    }
+    ModuleInstance* moduleInstance = instantiateModule(module,std::move(linkResult.resolvedImports));
+    if(!moduleInstance) { return EXIT_FAILURE; }
+    Emscripten::initInstance(module,moduleInstance);
     
     char name[256];
     char filename[256];
@@ -176,7 +166,7 @@ int mainBody(const char* filename_aux, int argc, char** args)
     GUI* interface = new GTKUI(basename((char*)filename), nullptr, nullptr);
     DSP->buildUserInterface(interface);
     
-    FUI* finterface	= new FUI();
+    FUI* finterface = new FUI();
     DSP->buildUserInterface(finterface);
     finterface->recallState(rcfilename);
     
@@ -236,18 +226,18 @@ int mainBody(const char* filename_aux, int argc, char** args)
 
 int commandMain(int argc,char** argv)
 {
-   const char* filename = argv[argc-1];
+    const char* filename = argv[argc-1];
   
-	Runtime::init();
+    Runtime::init();
 
-	int returnCode = EXIT_FAILURE;
-	#ifdef __AFL_LOOP
-	while(__AFL_LOOP(2000))
-	#endif
-	{
-     	returnCode = mainBody(filename, argc, argv);
+    int returnCode = EXIT_FAILURE;
+    #ifdef __AFL_LOOP
+    while(__AFL_LOOP(2000))
+    #endif
+    {
+        returnCode = mainBody(filename, argc, argv);
         std::cout << "freeUnreferencedObjects " << std::endl;
-		Runtime::freeUnreferencedObjects({});
-	}
-	return returnCode;
+        Runtime::freeUnreferencedObjects({});
+    }
+    return returnCode;
 }
