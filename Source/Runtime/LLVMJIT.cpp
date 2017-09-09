@@ -752,7 +752,19 @@ namespace LLVMJIT
 			// our symbols can't be found in the JITed object file.
 			targetTriple += "-elf";
 		#endif
-		targetMachine = llvm::EngineBuilder().selectTarget(
+        
+        // SL : fast-math a native level
+        llvm::TargetOptions targetOptions;
+        
+        targetOptions.AllowFPOpFusion = llvm::FPOpFusion::Fast;
+        targetOptions.UnsafeFPMath = true;
+        targetOptions.NoInfsFPMath = true;
+        targetOptions.NoNaNsFPMath = true;
+        targetOptions.GuaranteedTailCallOpt = true;
+        targetOptions.NoTrappingFPMath = true;
+        targetOptions.FPDenormalMode = llvm::FPDenormal::IEEE;
+        
+        targetMachine = llvm::EngineBuilder().setTargetOptions(targetOptions).selectTarget(
 			llvm::Triple(targetTriple),"",llvm::sys::getHostCPUName(),
 			#if defined(_WIN32) && !defined(_WIN64)
 				// Use SSE2 instead of the FPU on x86 for more control over how intermediate results are rounded.

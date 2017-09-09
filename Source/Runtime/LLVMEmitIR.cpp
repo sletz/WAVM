@@ -122,7 +122,12 @@ namespace LLVMJIT
 		, functionInstance(inFunctionInstance)
 		, llvmFunction(inLLVMFunction)
 		, irBuilder(context)
-        {}
+        {
+            // SL : fast-math a IR level
+            llvm::FastMathFlags FMF;
+            FMF.setUnsafeAlgebra();
+            irBuilder.setFastMathFlags(FMF);
+        }
 
 		void emit();
 
@@ -776,6 +781,8 @@ namespace LLVMJIT
 		//
 		// Load/store operators
 		//
+        
+        // SL : removed setVolatile
 
 		#define EMIT_LOAD_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
 			void valueTypeId##_##name(LoadOrStoreImm<naturalAlignmentLog2> imm) \
