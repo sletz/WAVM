@@ -23,9 +23,10 @@
 #include <sstream>
 #include <cmath>
 
+#include "Runtime/Intrinsics.h"
+
 #include "wasm_dsp_aux.hh"
 #include "faust/gui/JSONUIDecoder.h"
-#include "Runtime/Intrinsics.h"
 
 // Module imported mathematical functions
 
@@ -85,7 +86,7 @@ wasm_dsp::wasm_dsp(ModuleInstance* instance)
     MemoryInstance* memory = getDefaultMemory(instance);
     
     // JSON is located at offset 0 in the memory segment
-    fDecoder = new JSONUIDecoder(getJSON(getMemoryBaseAddress(memory)));
+    fDecoder = new JSONUIDecoder1(getJSON(getMemoryBaseAddress(memory)), memory);
     
     int ptr_size = 4;
     int sample_size = sizeof(FAUSTFLOAT);
@@ -237,24 +238,9 @@ void wasm_dsp::compute(int count, FAUSTFLOAT** inputs, FAUSTFLOAT** outputs)
         for (int i = 0; i < fDecoder->fNumInputs; i++) {
             memcpy(fInputs[i], inputs[i], sizeof(FAUSTFLOAT) * count);
         }
-       
-        // Copy zone value to wasm module input control
-        controlMap& input_controls = fDecoder->fPathInputTable;
-        controlMap::iterator it;
-        for (it = input_controls.begin(); it != input_controls.end(); it++) {
-            pair <int, FAUSTFLOAT*> tmp = (*it).second;
-            setParamValue(tmp.first, *tmp.second);
-        }
         
         // Call wasm compute
         computeAux(count);
-        
-        // Copy wasm module output control to zone value
-        controlMap& output_controls = fDecoder->fPathOutputTable;
-        for (it = output_controls.begin(); it != output_controls.end(); it++) {
-            pair <int, FAUSTFLOAT*> tmp = (*it).second;
-            *tmp.second = getParamValue(tmp.first);
-        }
         
         // Copy audio outputs
         for (int i = 0; i < fDecoder->fNumOutputs; i++) {
