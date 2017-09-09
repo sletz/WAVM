@@ -17,10 +17,6 @@ Here are the available options:
 
 With the JACK server running, the program can simply be tested by compiling a wasm module from a Faust source program with `faust -lang wasm foo.dsp -o foo.wasm`, then launching it with `faust-wavm foo.wasm`.
 
-### Known issues
-
-Polyphonic mode is not yet working correctly. 
-
 ## faustbench-wavm
 
 Benckmarking the Faust generated wasm code can be done using the **faustbench-wavm** tool:

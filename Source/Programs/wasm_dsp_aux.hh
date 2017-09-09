@@ -25,17 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "Inline/BasicTypes.h"
-#include "Inline/Floats.h"
-#include "Inline/Timing.h"
-#include "WAST/WAST.h"
-#include "WASM/WASM.h"
-#include "IR/Module.h"
-#include "IR/Validate.h"
-#include "Runtime/Runtime.h"
-
 #include "faust/dsp/dsp.h"
-
 #include "faust/gui/UI.h"
 #include "faust/gui/meta.h"
 #include "faust/gui/SimpleParser.h"
@@ -356,12 +346,15 @@ class wasm_dsp : public dsp {
             return json;
         }
  
-        // wasm_dsp objects are allocated using wasm_dsp_factory::createDSPInstance();
         virtual ~wasm_dsp();
     
     public:
     
-        wasm_dsp(Runtime::ModuleInstance* instance);
+        static IR::Module* gFactoryModule;
+    
+        static bool init(const char* filename);
+    
+        wasm_dsp(IR::Module* module);
     
         int getNumInputs();
         

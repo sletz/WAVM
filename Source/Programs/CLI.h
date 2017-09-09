@@ -157,6 +157,7 @@ inline bool endsWith(const char *str, const char *suffix)
 	return (strncmp(str+lenstr-lensuffix, suffix, lensuffix) == 0);
 }
 
+/*
 int commandMain(int argc,char** argv);
 
 int main(int argc,char** argv)
@@ -182,3 +183,4 @@ int main(int argc,char** argv)
 		return EXIT_FAILURE;
 	}
 }
+*/

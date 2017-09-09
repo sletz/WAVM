@@ -24,9 +24,16 @@
 #include <cmath>
 
 #include "Runtime/Intrinsics.h"
+#include "IR/Module.h"
+#include "Runtime/Linker.h"
 
 #include "wasm_dsp_aux.hh"
 #include "faust/gui/JSONUIDecoder.h"
+
+#include "CLI.h"
+
+using namespace IR;
+using namespace Runtime;
 
 // Module imported mathematical functions
 
@@ -65,25 +72,124 @@ DEFINE_INTRINSIC_FUNCTION1(global.Math,round,round,f64,f64,value) { return std::
 DEFINE_INTRINSIC_FUNCTION1(global.Math,sin,sin,f64,f64,value) { return std::sin(value); }
 DEFINE_INTRINSIC_FUNCTION1(global.Math,tan,tan,f64,f64,value) { return std::tan(value); }
 
+// Tools for Module import
+
+struct RootResolver : Resolver
+{
+    std::map<std::string,Resolver*> moduleNameToResolverMap;
+    
+    bool resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,ObjectInstance*& outObject) override
+    {
+        // Try to resolve an intrinsic first.
+        if(IntrinsicResolver::singleton.resolve(moduleName,exportName,type,outObject)) { return true; }
+        
+        // Then look for a named module.
+        auto namedResolverIt = moduleNameToResolverMap.find(moduleName);
+        if(namedResolverIt != moduleNameToResolverMap.end())
+        {
+            return namedResolverIt->second->resolve(moduleName,exportName,type,outObject);
+        }
+        
+        // Finally, stub in missing function imports.
+        if(type.kind == ObjectKind::function)
+        {
+            // Generate a function body that just uses the unreachable op to fault if called.
+            Serialization::ArrayOutputStream codeStream;
+            OperatorEncoderStream encoder(codeStream);
+            encoder.unreachable();
+            encoder.end();
+            
+            // Generate a module for the stub function.
+            Module stubModule;
+            DisassemblyNames stubModuleNames;
+            stubModule.types.push_back(asFunctionType(type));
+            stubModule.functions.defs.push_back({{0},{},std::move(codeStream.getBytes()),{}});
+            stubModule.exports.push_back({"importStub",ObjectKind::function,0});
+            stubModuleNames.functions.push_back({std::string(moduleName) + "." + exportName,{}});
+            IR::setDisassemblyNames(stubModule,stubModuleNames);
+            IR::validateDefinitions(stubModule);
+            
+            // Instantiate the module and return the stub function instance.
+            auto stubModuleInstance = instantiateModule(stubModule,{});
+            outObject = getInstanceExport(stubModuleInstance,"importStub");
+            Log::printf(Log::Category::error,"Generated stub for missing function import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
+            return true;
+        }
+        else if(type.kind == ObjectKind::memory)
+        {
+            outObject = asObject(Runtime::createMemory(asMemoryType(type)));
+            Log::printf(Log::Category::error,"Generated stub for missing memory import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
+            return true;
+        }
+        else if(type.kind == ObjectKind::table)
+        {
+            outObject = asObject(Runtime::createTable(asTableType(type)));
+            Log::printf(Log::Category::error,"Generated stub for missing table import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
+            return true;
+        }
+        else if(type.kind == ObjectKind::global)
+        {
+            outObject = asObject(Runtime::createGlobal(asGlobalType(type),Runtime::Value(asGlobalType(type).valueType,Runtime::UntaggedValue())));
+            Log::printf(Log::Category::error,"Generated stub for missing global import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
+            return true;
+        }
+        
+        return false;
+    }
+};
+
 // Public DSP API
 
-wasm_dsp::wasm_dsp(ModuleInstance* instance)
+Module* wasm_dsp::gFactoryModule = nullptr;
+
+bool wasm_dsp::init(const char* filename)
 {
-    fModuleInstance = instance;
+    if (!gFactoryModule) {
+        gFactoryModule = new Module();
+        if (!loadModule(filename, *gFactoryModule)) {
+            std::cerr << "Failed to load module" << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+wasm_dsp::wasm_dsp(Module* module)
+{
+    RootResolver rootResolver;
+    LinkResult linkResult = linkModule(*module, rootResolver);
     
-    fGetNumInputs = asFunctionNullable(getInstanceExport(instance, "getNumInputs"));
-    fGetNumOutputs = asFunctionNullable(getInstanceExport(instance, "getNumOutputs"));
-    fGetSampleRate = asFunctionNullable(getInstanceExport(instance, "getSampleRate"));
-    fInit = asFunctionNullable(getInstanceExport(instance, "init"));
-    fInstanceInit = asFunctionNullable(getInstanceExport(instance, "instanceInit"));
-    fInstanceConstants = asFunctionNullable(getInstanceExport(instance, "instanceConstants"));
-    fInstanceResetUI = asFunctionNullable(getInstanceExport(instance, "instanceResetUserInterface"));
-    fInstanceClear = asFunctionNullable(getInstanceExport(instance, "instanceClear"));
-    fSetParamValue = asFunctionNullable(getInstanceExport(instance, "setParamValue"));
-    fGetParamValue = asFunctionNullable(getInstanceExport(instance, "getParamValue"));
-    fCompute = asFunctionNullable(getInstanceExport(instance, "compute"));
+    if(!linkResult.success)
+    {
+        std::cerr << "Failed to link module:" << std::endl;
+        for(auto& missingImport : linkResult.missingImports)
+        {
+            std::cerr << "Missing import: module=\"" << missingImport.moduleName
+            << "\" export=\"" << missingImport.exportName
+            << "\" type=\"" << asString(missingImport.type) << "\"" << std::endl;
+        }
+        throw std::bad_alloc();
+    }
     
-    MemoryInstance* memory = getDefaultMemory(instance);
+    fModuleInstance = instantiateModule(*module, std::move(linkResult.resolvedImports));
+    if (!fModuleInstance) {
+        std::cerr << "Failed to instantiateModule" << std::endl;
+        throw std::bad_alloc();
+    }
+    
+    fGetNumInputs = asFunctionNullable(getInstanceExport(fModuleInstance, "getNumInputs"));
+    fGetNumOutputs = asFunctionNullable(getInstanceExport(fModuleInstance, "getNumOutputs"));
+    fGetSampleRate = asFunctionNullable(getInstanceExport(fModuleInstance, "getSampleRate"));
+    fInit = asFunctionNullable(getInstanceExport(fModuleInstance, "init"));
+    fInstanceInit = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceInit"));
+    fInstanceConstants = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceConstants"));
+    fInstanceResetUI = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceResetUserInterface"));
+    fInstanceClear = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceClear"));
+    fSetParamValue = asFunctionNullable(getInstanceExport(fModuleInstance, "setParamValue"));
+    fGetParamValue = asFunctionNullable(getInstanceExport(fModuleInstance, "getParamValue"));
+    fCompute = asFunctionNullable(getInstanceExport(fModuleInstance, "compute"));
+    
+    MemoryInstance* memory = getDefaultMemory(fModuleInstance);
     
     // JSON is located at offset 0 in the memory segment
     fDecoder = new JSONUIDecoder1(getJSON(getMemoryBaseAddress(memory)), memory);
@@ -222,7 +328,7 @@ void wasm_dsp::instanceClear()
 
 wasm_dsp* wasm_dsp::clone()
 {
-    return new wasm_dsp(fModuleInstance);
+    return new wasm_dsp(wasm_dsp::gFactoryModule);
 }
 
 void wasm_dsp::metadata(Meta* m)
