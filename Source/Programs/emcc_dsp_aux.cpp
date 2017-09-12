@@ -119,9 +119,7 @@ bool emcc_dsp::init(const char* filename)
 emcc_dsp::emcc_dsp(Module* module, const string& name)
 {
     RootResolver rootResolver;
-    std::cerr << "emcc_dsp 1" << std::endl;
     LinkResult linkResult = linkModule(*module, rootResolver);
-    std::cerr << "emcc_dsp 2" << std::endl;
     
     if(!linkResult.success)
     {
@@ -143,9 +141,13 @@ emcc_dsp::emcc_dsp(Module* module, const string& name)
         throw std::bad_alloc();
     }
     
-    fName =  name;
+    fName = name;
     
     fNew = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name + "_constructor"));
+    if (!fNew) {
+        std::cerr << "Error : module is not compiled with Emscripten...\n";
+        throw std::bad_alloc();
+    }
     fDelete = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_destructor"));
     fGetNumInputs = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getNumInputs"));
     fGetNumOutputs = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getNumOutputs"));

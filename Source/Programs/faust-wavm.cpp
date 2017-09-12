@@ -36,14 +36,13 @@ ztimedmap GUI::gTimedZoneMap;
 int mainBody(const char* filename_aux, int argc, char** args)
 {
     if (isopt(args, "-h") || isopt(args, "-help")) {
-        cout << "faust-wavm [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm" << endl;
+        cout << "faust-wavm [-emcc] [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm" << endl;
         exit(EXIT_FAILURE);
     }
     
     bool is_emcc = isopt(args, "-emcc");
     
-    cout << "is_emcc " << is_emcc << std::endl;
-    
+    // Load and init the module
     if (is_emcc) {
         // Load and init the emcc module
         if (!emcc_dsp::init(filename_aux)) {
@@ -79,17 +78,15 @@ int mainBody(const char* filename_aux, int argc, char** args)
     // Create an instance
     dsp* DSP = nullptr;
     
-    // determine position of the last '.'
-    string name_aux = filename;
-    unsigned int p2 = name_aux.size();
-    for (unsigned int i = 0; i < name_aux.size(); i++) {
-        if (name_aux[i] == '.')  { p2 = i; }
-    }
-    
-    if (is_emcc) {
-        DSP = new emcc_dsp(emcc_dsp::gFactoryModule, name_aux.substr(0, p2));
-    } else {
-        DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
+    try {
+        if (is_emcc) {
+            DSP = new emcc_dsp(emcc_dsp::gFactoryModule, extractName(filename));
+        } else {
+            DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
+        }
+    } catch (...) {
+        std::cerr << "Error : cannot allocate DSP\n";
+        return EXIT_FAILURE;
     }
     
     if (nvoices > 0) {

@@ -15,29 +15,53 @@
 #include <libgen.h>
 
 #include "wasm_dsp_aux.hh"
+#include "emcc_dsp_aux.hh"
+
 #include "faust/dsp/dsp-bench.h"
 #include "faust/misc.h"
 
 using namespace IR;
 using namespace Runtime;
 
-int mainBody(const char* filename_aux, int argc, char** args)
+int mainBody(const char* filename, int argc, char** args)
 {
     if (isopt(args, "-h") || isopt(args, "-help")) {
-        std::cout << "faustbench-wavm foo.wasm" << std::endl;
+        std::cout << "faustbench-wavm [-emcc] [-run <num>] foo.wasm" << std::endl;
         exit(EXIT_FAILURE);
     }
+    
+    int run = lopt(args, "-run", 1);
+    bool is_emcc = isopt(args, "-emcc");
 
     // Load and init the module
-    if (!wasm_dsp::init(filename_aux)) {
-        return EXIT_FAILURE;
+    if (is_emcc) {
+        // Load and init the emcc module
+        if (!emcc_dsp::init(filename)) {
+            return EXIT_FAILURE;
+        }
+    } else {
+        // Load and init the wasm module
+        if (!wasm_dsp::init(filename)) {
+            return EXIT_FAILURE;
+        }
     }
     
     // Create an instance
-    dsp* DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
+    dsp* DSP = nullptr;
     
-    measure_dsp mes(DSP, 1024, 5.);  // Buffer_size and duration in sec of  measure
-    for (int i = 0; i < 5; i++) {
+    try {
+        if (is_emcc) {
+            DSP = new emcc_dsp(emcc_dsp::gFactoryModule, extractName(filename));
+        } else {
+            DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
+        }
+    } catch (...) {
+        std::cerr << "Error : cannot allocate DSP\n";
+        return EXIT_FAILURE;
+    }
+    
+    measure_dsp mes(DSP, 1024, 5.);  // Buffer_size and duration in sec of measure
+    for (int i = 0; i < run; i++) {
         mes.measure();
         std::cout << args[0] << " : " << mes.getStats() << " " << "(DSP CPU % : " << (mes.getCPULoad() * 100) << ")" << std::endl;
     }

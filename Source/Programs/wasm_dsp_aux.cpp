@@ -176,6 +176,10 @@ wasm_dsp::wasm_dsp(Module* module)
     }
     
     fGetNumInputs = asFunctionNullable(getInstanceExport(fModuleInstance, "getNumInputs"));
+    if (!fGetNumInputs) {
+        std::cerr << "Error : module is not compiled with Faust...\n";
+        throw std::bad_alloc();
+    }
     fGetNumOutputs = asFunctionNullable(getInstanceExport(fModuleInstance, "getNumOutputs"));
     fGetSampleRate = asFunctionNullable(getInstanceExport(fModuleInstance, "getSampleRate"));
     fInit = asFunctionNullable(getInstanceExport(fModuleInstance, "init"));

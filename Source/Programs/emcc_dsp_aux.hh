@@ -144,4 +144,14 @@ class emcc_dsp : public dsp {
     
 };
 
+inline std::string extractName(const std::string& name)
+{
+    // determine position of the last '.'
+    unsigned int p2 = name.size();
+    for (unsigned int i = 0; i < name.size(); i++) {
+        if (name[i] == '.')  { p2 = i; }
+    }
+    return name.substr(0, p2);
+}
+
 #endif
