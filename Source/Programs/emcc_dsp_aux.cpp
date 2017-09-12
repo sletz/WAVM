@@ -24,51 +24,15 @@
 #include <cmath>
 
 #include "Runtime/Intrinsics.h"
+#include "Emscripten/Emscripten.h"
 #include "IR/Module.h"
 #include "Runtime/Linker.h"
 #include "CLI.h"
 
-#include "wasm_dsp_aux.hh"
+#include "emcc_dsp_aux.hh"
 
 using namespace IR;
 using namespace Runtime;
-
-// Module imported mathematical functions
-
-// Integer version
-DEFINE_INTRINSIC_FUNCTION1(global.Math,abs,abs,i32,i32,value) { return std::abs(value); }
-
-// Float (= f32) version
-DEFINE_INTRINSIC_FUNCTION1(global.Math,acos,acos,f32,f32,value) { return std::acos(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,asin,asin,f32,f32,value) { return std::asin(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,atan,atan,f32,f32,value) { return std::atan(value); }
-DEFINE_INTRINSIC_FUNCTION2(global.Math,atan2,atan2,f32,f32,left,f32,right) { return std::atan2(left,right); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,cos,cos,f32,f32,value) { return std::cos(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,exp,exp,f32,f32,value) { return std::exp(value); }
-DEFINE_INTRINSIC_FUNCTION2(asm2wasm,fmod,fmod,f32,f32,left,f32,right) { return std::fmod(left,right); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,log,log,f32,f32,value) { return std::log(value); }
-DEFINE_INTRINSIC_FUNCTION1(asm2wasm,log10,log10,f32,f32,value) { return std::log10(value); }
-DEFINE_INTRINSIC_FUNCTION2(global.Math,pow,pow,f32,f32,left,f32,right) { return std::pow(left,right); }
-DEFINE_INTRINSIC_FUNCTION2(asm2wasm,remainder,remainder,f32,f32,left,f32,right) { return std::remainder(left,right); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,round,round,f32,f32,value) { return std::round(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,sin,sin,f32,f32,value) { return std::sin(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,tan,tan,f32,f32,value) { return std::tan(value); }
-
-// Double (= f64) version
-DEFINE_INTRINSIC_FUNCTION1(global.Math,acos,acos,f64,f64,value) { return std::acos(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,asin,asin,f64,f64,value) { return std::asin(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,atan,atan,f64,f64,value) { return std::atan(value); }
-DEFINE_INTRINSIC_FUNCTION2(global.Math,atan2,atan2,f64,f64,left,f64,right) { return std::atan2(left,right); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,cos,cos,f64,f64,value) { return std::cos(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,exp,exp,f64,f64,value) { return std::exp(value); }
-DEFINE_INTRINSIC_FUNCTION2(asm2wasm,fmod,fmod,f64,f64,left,f64,right) { return std::fmod(left,right); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,log,log,f64,f64,value) { return std::log(value); }
-DEFINE_INTRINSIC_FUNCTION1(asm2wasm,log10,log10,f64,f64,value) { return std::log10(value); }
-DEFINE_INTRINSIC_FUNCTION2(global.Math,pow,pow,f64,f64,left,f64,right) { return std::pow(left,right); }
-DEFINE_INTRINSIC_FUNCTION2(asm2wasm,remainder,remainder,f64,f64,left,f64,right) { return std::remainder(left,right); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,round,round,f64,f64,value) { return std::round(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,sin,sin,f64,f64,value) { return std::sin(value); }
-DEFINE_INTRINSIC_FUNCTION1(global.Math,tan,tan,f64,f64,value) { return std::tan(value); }
 
 // Tools for Module import
 
@@ -138,9 +102,9 @@ struct RootResolver : Resolver
 
 // Public DSP API
 
-Module* wasm_dsp::gFactoryModule = nullptr;
+Module* emcc_dsp::gFactoryModule = nullptr;
 
-bool wasm_dsp::init(const char* filename)
+bool emcc_dsp::init(const char* filename)
 {
     if (!gFactoryModule) {
         gFactoryModule = new Module();
@@ -152,10 +116,12 @@ bool wasm_dsp::init(const char* filename)
     return true;
 }
 
-wasm_dsp::wasm_dsp(Module* module)
+emcc_dsp::emcc_dsp(Module* module, const string& name)
 {
     RootResolver rootResolver;
+    std::cerr << "emcc_dsp 1" << std::endl;
     LinkResult linkResult = linkModule(*module, rootResolver);
+    std::cerr << "emcc_dsp 2" << std::endl;
     
     if(!linkResult.success)
     {
@@ -170,23 +136,39 @@ wasm_dsp::wasm_dsp(Module* module)
     }
     
     fModuleInstance = instantiateModule(*module, std::move(linkResult.resolvedImports));
+    Emscripten::initInstance(*module,fModuleInstance);
+    
     if (!fModuleInstance) {
         std::cerr << "Failed to instantiateModule" << std::endl;
         throw std::bad_alloc();
     }
     
-    fGetNumInputs = asFunctionNullable(getInstanceExport(fModuleInstance, "getNumInputs"));
-    fGetNumOutputs = asFunctionNullable(getInstanceExport(fModuleInstance, "getNumOutputs"));
-    fGetSampleRate = asFunctionNullable(getInstanceExport(fModuleInstance, "getSampleRate"));
-    fInit = asFunctionNullable(getInstanceExport(fModuleInstance, "init"));
-    fInstanceInit = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceInit"));
-    fInstanceConstants = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceConstants"));
-    fInstanceResetUI = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceResetUserInterface"));
-    fInstanceClear = asFunctionNullable(getInstanceExport(fModuleInstance, "instanceClear"));
-    fSetParamValue = asFunctionNullable(getInstanceExport(fModuleInstance, "setParamValue"));
-    fGetParamValue = asFunctionNullable(getInstanceExport(fModuleInstance, "getParamValue"));
-    fCompute = asFunctionNullable(getInstanceExport(fModuleInstance, "compute"));
+    fName =  name;
     
+    fNew = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name + "_constructor"));
+    fDelete = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_destructor"));
+    fGetNumInputs = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getNumInputs"));
+    fGetNumOutputs = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getNumOutputs"));
+    fGetSampleRate = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getSampleRate"));
+    fInit = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_init"));
+    fInstanceInit = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_instanceInit"));
+    fInstanceConstants = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_instanceConstants"));
+    fInstanceResetUI = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_instanceResetUserInterface"));
+    fInstanceClear = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_instanceClear"));
+    fSetParamValue = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_setParamValue"));
+    fGetParamValue = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getParamValue"));
+    fCompute = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_compute"));
+    fJSON = asFunctionNullable(getInstanceExport(fModuleInstance, "_" + name +  "_getJSON"));
+    
+    std::cerr << "instantiateModule" << std::endl;
+    
+    std::vector<Value> invokeArgs;
+    auto functionResult = invokeFunction(fNew, invokeArgs);
+    fDSP = functionResult.i32;
+    
+    std::cerr << "fDSP " << fDSP << std::endl;
+    
+    /*
     MemoryInstance* memory = getDefaultMemory(fModuleInstance);
     
     // JSON is located at offset 0 in the memory segment
@@ -237,105 +219,113 @@ wasm_dsp::wasm_dsp(Module* module)
             fOutputs[i] =  HEAPF32 + (buffer_size * i);
         }
     }
+    */
 }
 
-wasm_dsp::~wasm_dsp()
+emcc_dsp::~emcc_dsp()
 {
+    /*
     delete fDecoder;
     delete [] fInputs;
     delete [] fOutputs;
+    */
+    
+    std::vector<Value> invokeArgs;
+    Value dsp_arg(fDSP);
+    invokeFunction(fDelete, invokeArgs);
 }
 
-int wasm_dsp::getNumInputs()
+int emcc_dsp::getNumInputs()
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
     auto functionResult = invokeFunction(fGetNumInputs, invokeArgs);
     return functionResult.i32;
 }
         
-int wasm_dsp::getNumOutputs()
+int emcc_dsp::getNumOutputs()
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
     auto functionResult = invokeFunction(fGetNumOutputs, invokeArgs);
     return functionResult.i32;
 }
 
-void wasm_dsp::buildUserInterface(UI* ui_interface)
+void emcc_dsp::buildUserInterface(UI* ui_interface)
 {
-    fDecoder->buildUserInterface(ui_interface);
+    //fDecoder->buildUserInterface(ui_interface);
 }
 
-int wasm_dsp::getSampleRate()
+int emcc_dsp::getSampleRate()
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
     auto functionResult = invokeFunction(fGetSampleRate, invokeArgs);
     return functionResult.i32;
 }
 
-void wasm_dsp::init(int samplingRate)
+void emcc_dsp::init(int samplingRate)
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
     invokeFunction(fInit, invokeArgs);
 }
 
-void wasm_dsp::instanceInit(int samplingRate)
+void emcc_dsp::instanceInit(int samplingRate)
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
     invokeFunction(fInstanceInit, invokeArgs);
 }
 
-void wasm_dsp::instanceConstants(int samplingRate)
+void emcc_dsp::instanceConstants(int samplingRate)
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
     invokeFunction(fInstanceConstants, invokeArgs);
 }
 
-void wasm_dsp::instanceResetUserInterface()
+void emcc_dsp::instanceResetUserInterface()
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
     invokeFunction(fInstanceResetUI, invokeArgs);
 }
 
-void wasm_dsp::instanceClear()
+void emcc_dsp::instanceClear()
 {
     std::vector<Value> invokeArgs;
-    Value dsp_arg = DSP_BASE;
+    Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
     invokeFunction(fInstanceClear, invokeArgs);
 }
 
-wasm_dsp* wasm_dsp::clone()
+emcc_dsp* emcc_dsp::clone()
 {
-    return new wasm_dsp(wasm_dsp::gFactoryModule);
+    return new emcc_dsp(emcc_dsp::gFactoryModule, fName);
 }
 
-void wasm_dsp::metadata(Meta* m)
+void emcc_dsp::metadata(Meta* m)
 {
-    fDecoder->metadata(m);
+    //fDecoder->metadata(m);
 }
 
-void wasm_dsp::compute(int count, FAUSTFLOAT** inputs, FAUSTFLOAT** outputs)
+void emcc_dsp::compute(int count, FAUSTFLOAT** inputs, FAUSTFLOAT** outputs)
 {
+    /*
     try
     {
         // Copy audio inputs
@@ -355,5 +345,6 @@ void wasm_dsp::compute(int count, FAUSTFLOAT** inputs, FAUSTFLOAT** outputs)
         std::cerr << "Runtime exception: " << describeExceptionCause(exception.cause) << std::endl;
         for (auto calledFunction : exception.callStack) { std::cerr << "  " << calledFunction << std::endl; }
     }
+    */
 }
 

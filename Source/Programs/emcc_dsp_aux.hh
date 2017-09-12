@@ -19,8 +19,8 @@
  ************************************************************************
  ************************************************************************/
 
-#ifndef WASM_DSP_AUX_H
-#define WASM_DSP_AUX_H
+#ifndef EMCC_DSP_AUX_H
+#define EMCC_DSP_AUX_H
 
 #include <string>
 #include <vector>
@@ -32,24 +32,25 @@
 
 using namespace Runtime;
 
-#define DSP_BASE 0  // method 'dsp' parameter is actually 0
-
-
 /**
  * DSP instance class with methods.
  */
-class wasm_dsp : public dsp {
+class emcc_dsp : public dsp {
     
     private:
+    
+        std::string fName;
     
         int fWasmInputs;        // Index in wasm memory
         int fWasmOutputs;       // Index in wasm memory
     
-        FAUSTFLOAT** fInputs;   // Wasm memory mapped to pointers
-        FAUSTFLOAT** fOutputs;  // Wasm memory mapped to pointers
+        //FAUSTFLOAT** fInputs;   // Wasm memory mapped to pointers
+         //FAUSTFLOAT** fOutputs;  // Wasm memory mapped to pointers
     
         ModuleInstance* fModuleInstance;
     
+        FunctionInstance* fNew;
+        FunctionInstance* fDelete;
         FunctionInstance* fGetNumInputs;
         FunctionInstance* fGetNumOutputs;
         FunctionInstance* fInit;
@@ -61,15 +62,18 @@ class wasm_dsp : public dsp {
         FunctionInstance* fSetParamValue;
         FunctionInstance* fGetParamValue;
         FunctionInstance* fCompute;
+        FunctionInstance* fJSON;
     
-        JSONUIDecoder1* fDecoder;
+        int fDSP;
+    
+        //JSONUIDecoder2* fDecoder;
     
         // Internal helper methods
     
         FAUSTFLOAT getParamValue(int index)
         {
             std::vector<Value> invokeArgs;
-            Value dsp_arg = DSP_BASE;
+            Value dsp_arg = fDSP;
             Value index_arg = index;
             invokeArgs.push_back(dsp_arg);
             invokeArgs.push_back(index_arg);
@@ -80,7 +84,7 @@ class wasm_dsp : public dsp {
         void setParamValue(int index, FAUSTFLOAT value)
         {
             std::vector<Value> invokeArgs;
-            Value dsp_arg = DSP_BASE;
+            Value dsp_arg = fDSP;
             Value index_arg = index;
             Value value_arg = value;
             invokeArgs.push_back(dsp_arg);
@@ -93,7 +97,7 @@ class wasm_dsp : public dsp {
         {
             // Call wasm compute
             std::vector<Value> invokeArgs;
-            Value dsp_arg = DSP_BASE;
+            Value dsp_arg = fDSP;
             Value count_arg = count;
             Value ins_arg = I32(fWasmInputs);
             Value outs_arg = I32(fWasmOutputs);
@@ -104,17 +108,7 @@ class wasm_dsp : public dsp {
             invokeFunction(fCompute, invokeArgs);
         }
     
-        std::string getJSON(U8* base_ptr)
-        {
-            int i = 0;
-            std::string json = "";
-            while (base_ptr[i] != 0) {
-                json += base_ptr[i++];
-            }
-            return json;
-        }
- 
-        virtual ~wasm_dsp();
+        virtual ~emcc_dsp();
     
     public:
     
@@ -122,7 +116,7 @@ class wasm_dsp : public dsp {
     
         static bool init(const char* filename);
     
-        wasm_dsp(IR::Module* module);
+        emcc_dsp(IR::Module* module, const string& name);
     
         int getNumInputs();
         
@@ -142,7 +136,7 @@ class wasm_dsp : public dsp {
         
         void instanceClear();
         
-        wasm_dsp* clone();
+        emcc_dsp* clone();
         
         void metadata(Meta* m);
         

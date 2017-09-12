@@ -15,6 +15,7 @@
 #include <libgen.h>
 
 #include "wasm_dsp_aux.hh"
+#include "emcc_dsp_aux.hh"
 
 #include "faust/dsp/poly-dsp.h"
 #include "faust/gui/FUI.h"
@@ -39,9 +40,20 @@ int mainBody(const char* filename_aux, int argc, char** args)
         exit(EXIT_FAILURE);
     }
     
-    // Load and init the module
-    if (!wasm_dsp::init(filename_aux)) {
-        return EXIT_FAILURE;
+    bool is_emcc = isopt(args, "-emcc");
+    
+    cout << "is_emcc " << is_emcc << std::endl;
+    
+    if (is_emcc) {
+        // Load and init the emcc module
+        if (!emcc_dsp::init(filename_aux)) {
+            return EXIT_FAILURE;
+        }
+    } else {
+        // Load and init the wasm module
+        if (!wasm_dsp::init(filename_aux)) {
+            return EXIT_FAILURE;
+        }
     }
     
     char name[256];
@@ -65,7 +77,20 @@ int mainBody(const char* filename_aux, int argc, char** args)
     GUI* oscinterface = nullptr;
     
     // Create an instance
-    dsp* DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
+    dsp* DSP = nullptr;
+    
+    // determine position of the last '.'
+    string name_aux = filename;
+    unsigned int p2 = name_aux.size();
+    for (unsigned int i = 0; i < name_aux.size(); i++) {
+        if (name_aux[i] == '.')  { p2 = i; }
+    }
+    
+    if (is_emcc) {
+        DSP = new emcc_dsp(emcc_dsp::gFactoryModule, name_aux.substr(0, p2));
+    } else {
+        DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
+    }
     
     if (nvoices > 0) {
         cout << "Starting polyphonic mode nvoices : " << nvoices << endl;

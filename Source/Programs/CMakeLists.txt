@@ -29,14 +29,14 @@ add_definitions(${GTK2_CFLAGS_OTHER})
 # We need dynamic_cast
 add_compile_options(-frtti)
 
-add_executable(faust-wavm faust-wavm.cpp wasm_dsp_aux.cpp CLI.h)
+add_executable(faust-wavm faust-wavm.cpp wasm_dsp_aux.cpp emcc_dsp_aux.cpp CLI.h)
 target_link_libraries(faust-wavm jack OSCFaust HTTPDFaust microhttpd)
 target_link_libraries(faust-wavm ${GTK2_LIBRARIES})
 
-add_executable(faustbench-wavm faustbench-wavm.cpp wasm_dsp_aux.cpp CLI.h)
-
 target_link_libraries(faust-wavm Logging IR WAST WASM Runtime Emscripten)
 set_target_properties(faust-wavm PROPERTIES FOLDER Programs)
+
+add_executable(faustbench-wavm faustbench-wavm.cpp wasm_dsp_aux.cpp CLI.h)
 
 target_link_libraries(faustbench-wavm Logging IR WAST WASM Runtime Emscripten)
 set_target_properties(faustbench-wavm PROPERTIES FOLDER Programs)

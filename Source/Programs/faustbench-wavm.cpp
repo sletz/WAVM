@@ -36,14 +36,13 @@ int mainBody(const char* filename_aux, int argc, char** args)
     // Create an instance
     dsp* DSP = new wasm_dsp(wasm_dsp::gFactoryModule);
     
-    DSP->init(48000);
-    measure_dsp mes(DSP, 1024, 5);
+    measure_dsp mes(DSP, 1024, 5.);  // Buffer_size and duration in sec of  measure
     for (int i = 0; i < 5; i++) {
         mes.measure();
         std::cout << args[0] << " : " << mes.getStats() << " " << "(DSP CPU % : " << (mes.getCPULoad() * 100) << ")" << std::endl;
     }
     
-    delete DSP;
+    // DSP is deallocated by measure_dsp
     return EXIT_SUCCESS;
 }
 
