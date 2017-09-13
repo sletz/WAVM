@@ -32,6 +32,8 @@ int mainBody(const char* filename, int argc, char** args)
     
     int run = lopt(args, "-run", 1);
     bool is_emcc = isopt(args, "-emcc");
+    
+    //FAUSTBENCH_LOG<string>("faustbench WAVM");
 
     // Load and init the module
     if (is_emcc) {
@@ -64,6 +66,7 @@ int mainBody(const char* filename, int argc, char** args)
     for (int i = 0; i < run; i++) {
         mes.measure();
         std::cout << args[0] << " : " << mes.getStats() << " " << "(DSP CPU % : " << (mes.getCPULoad() * 100) << ")" << std::endl;
+        FAUSTBENCH_LOG<double>(mes.getStats());
     }
     
     // DSP is deallocated by measure_dsp
