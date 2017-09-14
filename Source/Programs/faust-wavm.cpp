@@ -100,7 +100,6 @@ int mainBody(const char* filename_aux, int argc, char** args)
     
     FUI* finterface = new FUI();
     DSP->buildUserInterface(finterface);
-    finterface->recallState(rcfilename);
     
     // Create JACK audio driver with the DSP
     jackaudio_midi audio;
@@ -108,6 +107,9 @@ int mainBody(const char* filename_aux, int argc, char** args)
     if (!audio.init(basename((char*)filename), DSP, true)) {
         return 0;
     }
+    
+    // After audio.init that calls 'init'
+    finterface->recallState(rcfilename);
     
     if (is_httpd) {
         httpdinterface = new httpdUI(name, DSP->getNumInputs(), DSP->getNumOutputs(), argc, args);
@@ -145,6 +147,8 @@ int mainBody(const char* filename_aux, int argc, char** args)
     interface->run();
   
     audio.stop();
+    
+    finterface->saveState(rcfilename);
     
     delete DSP;
     delete interface;

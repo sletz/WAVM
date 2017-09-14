@@ -26,7 +26,6 @@
 #include <vector>
 
 #ifdef DOUBLE_TEST
-
 #ifndef FAUSTFLOAT
 #define FAUSTFLOAT double
 #endif

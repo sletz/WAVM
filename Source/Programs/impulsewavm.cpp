@@ -83,7 +83,7 @@ struct CheckControlUI : public GenericUI {
    
     bool checkDefaults()
     {
-        for (int i= 0; i < fControlDefault.size(); i++) {
+        for (int i = 0; i < fControlDefault.size(); i++) {
             if (fControlDefault[i] != *fControlZone[i]) return false;
         }
         return true;
@@ -91,7 +91,7 @@ struct CheckControlUI : public GenericUI {
     
     void initRandom()
     {
-        for (int i= 0; i < fControlZone.size(); i++) {
+        for (int i = 0; i < fControlZone.size(); i++) {
             *fControlZone[i] = 0.123456789;
         }
     }
@@ -174,16 +174,17 @@ static void testPolyphony(dsp* voice)
     delete DSP;
 }
 
-int mainBody(const char* filename_aux, int argc, char** argv)
+int mainBody(const string& filename_aux, int argc, char** argv)
 {
-    char rcfilename[256];
     FUI finterface;
-    snprintf(rcfilename, 255, "%src", argv[0]);
+    
+    string filename_aux1 = filename_aux.substr(0, filename_aux.find ('.'));
+    string rcfilename = filename_aux1 + "rc";
     
     bool inpl = isopt(argv, "-inpl");
     
     // Load and init the wasm module
-    if (!wasm_dsp::init(filename_aux)) {
+    if (!wasm_dsp::init(filename_aux.c_str())) {
         return EXIT_FAILURE;
     }
   
@@ -237,7 +238,7 @@ int mainBody(const char* filename_aux, int argc, char** argv)
     int run = 0;
     
     // recall saved state
-    finterface.recallState(rcfilename);
+    finterface.recallState(rcfilename.c_str());
     
     // print general informations
     printf("number_of_inputs  : %3d\n", nins);

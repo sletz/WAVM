@@ -357,7 +357,7 @@ void wasm_dsp::compute(int count, FAUSTFLOAT** inputs, FAUSTFLOAT** outputs)
         
     } catch(Runtime::Exception exception) {
         std::cerr << "Runtime exception: " << describeExceptionCause(exception.cause) << std::endl;
-        for (auto calledFunction : exception.callStack) { std::cerr << "  " << calledFunction << std::endl; }
+        for (auto calledFunction : exception.callStack) { std::cerr << " " << calledFunction << std::endl; }
     }
 }
 
