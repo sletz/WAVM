@@ -25,6 +25,14 @@
 #include <string>
 #include <vector>
 
+#ifdef DOUBLE_TEST
+
+#ifndef FAUSTFLOAT
+#define FAUSTFLOAT double
+#endif
+
+#endif
+
 #include "faust/dsp/dsp.h"
 #include "faust/gui/UI.h"
 #include "faust/gui/meta.h"

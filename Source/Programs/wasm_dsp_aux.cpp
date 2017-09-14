@@ -196,7 +196,7 @@ wasm_dsp::wasm_dsp(Module* module)
     // JSON is located at offset 0 in the memory segment
     fDecoder = new JSONUIDecoder1(getJSON(getMemoryBaseAddress(memory)), memory);
     
-    int ptr_size = 4;
+    int ptr_size = sizeof(FAUSTFLOAT*);
     int sample_size = sizeof(FAUSTFLOAT);
     int buffer_size = 4096; // Max
     
