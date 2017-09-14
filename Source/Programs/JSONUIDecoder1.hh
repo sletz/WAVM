@@ -206,20 +206,20 @@ struct JSONUIDecoder1 {
             // Meta data declaration for input items
             if (isInput(type)) {
                 *fInControl[counterIn] = init;
-                for (int i = 0; i < (*it)->meta.size(); i++) {
+                for (size_type i = 0; i < (*it)->meta.size(); i++) {
                     ui->declare(fInControl[counterIn], (*it)->meta[i].first.c_str(), (*it)->meta[i].second.c_str());
                 }
             }
             // Meta data declaration for output items
             else if (isOutput(type)) {
                 *fOutControl[counterOut] = init;
-                for (int i = 0; i < (*it)->meta.size(); i++) {
+                for (size_type i = 0; i < (*it)->meta.size(); i++) {
                     ui->declare(fOutControl[counterOut], (*it)->meta[i].first.c_str(), (*it)->meta[i].second.c_str());
                 }
             }
             // Meta data declaration for group opening or closing
             else {
-                for (int i = 0; i < (*it)->meta.size(); i++) {
+                for (size_type i = 0; i < (*it)->meta.size(); i++) {
                     ui->declare(0, (*it)->meta[i].first.c_str(), (*it)->meta[i].second.c_str());
                 }
             }
