@@ -753,9 +753,10 @@ namespace LLVMJIT
 			targetTriple += "-elf";
 		#endif
         
-        // SL : fast-math a native level
         llvm::TargetOptions targetOptions;
         
+    #ifdef OPTIMIZE2
+        // SL : fast-math a native level
         targetOptions.AllowFPOpFusion = llvm::FPOpFusion::Fast;
         targetOptions.UnsafeFPMath = true;
         targetOptions.NoInfsFPMath = true;
@@ -763,6 +764,7 @@ namespace LLVMJIT
         targetOptions.GuaranteedTailCallOpt = true;
         targetOptions.NoTrappingFPMath = true;
         targetOptions.FPDenormalMode = llvm::FPDenormal::IEEE;
+    #endif
         
         targetMachine = llvm::EngineBuilder().setTargetOptions(targetOptions).selectTarget(
 			llvm::Triple(targetTriple),"",llvm::sys::getHostCPUName(),

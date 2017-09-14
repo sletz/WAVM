@@ -123,10 +123,12 @@ namespace LLVMJIT
 		, llvmFunction(inLLVMFunction)
 		, irBuilder(context)
         {
+        #ifdef OPTIMIZE2
             // SL : fast-math a IR level
             llvm::FastMathFlags FMF;
             FMF.setUnsafeAlgebra();
             irBuilder.setFastMathFlags(FMF);
+        #endif
         }
 
 		void emit();
@@ -783,8 +785,9 @@ namespace LLVMJIT
 		//
         
         // SL : removed setVolatile
-
-		#define EMIT_LOAD_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
+        
+    #ifdef OPTIMIZE1
+  		#define EMIT_LOAD_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
 			void valueTypeId##_##name(LoadOrStoreImm<naturalAlignmentLog2> imm) \
 			{ \
 				auto byteIndex = pop(); \
@@ -803,6 +806,30 @@ namespace LLVMJIT
 				auto store = irBuilder.CreateStore(memoryValue,pointer); \
 				store->setAlignment(1<<imm.alignmentLog2); \
 			}
+    #else
+            #define EMIT_LOAD_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
+            void valueTypeId##_##name(LoadOrStoreImm<naturalAlignmentLog2> imm) \
+            { \
+                auto byteIndex = pop(); \
+                auto pointer = coerceByteIndexToPointer(byteIndex,imm.offset,llvmMemoryType); \
+                auto load = irBuilder.CreateLoad(pointer); \
+                load->setVolatile(true); \
+                load->setAlignment(1<<imm.alignmentLog2); \
+                push(conversionOp(load,asLLVMType(ValueType::valueTypeId))); \
+                }
+            #define EMIT_STORE_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
+            void valueTypeId##_##name(LoadOrStoreImm<naturalAlignmentLog2> imm) \
+            { \
+                auto value = pop(); \
+                auto byteIndex = pop(); \
+                auto pointer = coerceByteIndexToPointer(byteIndex,imm.offset,llvmMemoryType); \
+                auto memoryValue = conversionOp(value,llvmMemoryType); \
+                auto store = irBuilder.CreateStore(memoryValue,pointer); \
+                store->setVolatile(true); \
+                store->setAlignment(1<<imm.alignmentLog2); \
+            }
+    #endif
+
 			
 		llvm::Value* identityConversion(llvm::Value* value,llvm::Type* type) { return value; }
 

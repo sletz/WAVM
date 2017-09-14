@@ -21,10 +21,11 @@ namespace Runtime
 	template<typename Float>
 	Float floatMin(Float left,Float right)
 	{
+    #ifdef OPTIMIZE3
         // SL
         return std::min(left, right);
-        /*
-		// If either operand is a NaN, convert it to a quiet NaN and return it.
+    #else
+ 		// If either operand is a NaN, convert it to a quiet NaN and return it.
 		if(left != left) { return quietNaN(left); }
 		else if(right != right) { return quietNaN(right); }
 		// If either operand is less than the other, return it.
@@ -39,15 +40,15 @@ namespace Runtime
 			rightComponents.value = right;
 			return leftComponents.bitcastInt < rightComponents.bitcastInt ? right : left;
 		}
-        */
+    #endif
 	}
 	
 	template<typename Float>
 	Float floatMax(Float left,Float right)
 	{
-        // SL
+    #ifdef OPTIMIZE3
         return std::max(left, right);
-        /*
+    #else
 		// If either operand is a NaN, convert it to a quiet NaN and return it.
 		if(left != left) { return quietNaN(left); }
 		else if(right != right) { return quietNaN(right); }
@@ -63,51 +64,54 @@ namespace Runtime
 			rightComponents.value = right;
 			return leftComponents.bitcastInt > rightComponents.bitcastInt ? right : left;
 		}
-        */
+    #endif
 	}
 
 	template<typename Float>
 	Float floatCeil(Float value)
 	{
-        // SL
+    #ifdef OPTIMIZE3
         return std::ceil(value);
-        /*
+    #else
 		if(value != value) { return quietNaN(value); }
 		else { return ceil(value); }
-        */
+    #endif
 	}
 	
 	template<typename Float>
 	Float floatFloor(Float value)
 	{
+    #ifdef OPTIMIZE3
         // SL
         return std::floor(value);
-        /*
+    #else
 		if(value != value) { return quietNaN(value); }
 		else { return floor(value); }
-        */
+    #endif
 	}
 	
 	template<typename Float>
 	Float floatTrunc(Float value)
 	{
+    #ifdef OPTIMIZE3
         // SL
         return std::trunc(value);
-        /*
+    #else
 		if(value != value) { return quietNaN(value); }
 		else { return trunc(value); }
-        */
+    #endif
 	}
 	
 	template<typename Float>
 	Float floatNearest(Float value)
 	{
+    #ifdef OPTIMIZE3
         // SL
         return nearbyint(value);
-        /*
+    #else
 		if(value != value) { return quietNaN(value); }
 		else { return nearbyint(value); }
-        */
+    #endif
 	}
 
 	DEFINE_INTRINSIC_FUNCTION2(wavmIntrinsics,floatMin,floatMin,f32,f32,left,f32,right) { return floatMin(left,right); }
@@ -127,8 +131,10 @@ namespace Runtime
 	template<typename Dest,typename Source,bool isMinInclusive>
 	Dest floatToInt(Source sourceValue,Source minValue,Source maxValue)
 	{
+    #ifdef OPTIMIZE3
+        // SL
         return (Dest)sourceValue;
-        /*
+    #else
 		if(sourceValue != sourceValue)
 		{
 			causeException(Exception::Cause::invalidFloatOperation);
@@ -138,7 +144,7 @@ namespace Runtime
 			causeException(Exception::Cause::integerDivideByZeroOrIntegerOverflow);
 		}
 		return (Dest)sourceValue;
-        */
+    #endif
 	}
 
 	DEFINE_INTRINSIC_FUNCTION1(wavmIntrinsics,floatToSignedInt,floatToSignedInt,i32,f32,source) { return floatToInt<I32,F32,false>(source,(F32)INT32_MIN,-(F32)INT32_MIN); }
