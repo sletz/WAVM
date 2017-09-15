@@ -6,7 +6,7 @@ Faust DSP programs compiled as wasm modules can be run using the WAVM WebAssembl
 
 Assuming you have installed the Faust2 branch, compile WAVM by following the standard procedure explained [here](https://github.com/AndrewScheidecker/WAVM). An additional **faust-wavm** tool using JACK for audio and GTK for the GUI will be compiled:
 
-`faust-wavm [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm`
+`faust-wavm [-emcc] [-nvoices N] [-midi] [-osc] [-httpd] foo.wasm`
 
 Here are the available options:
 
@@ -19,6 +19,15 @@ With the JACK server running, the program can simply be tested by compiling a wa
 
 ## faustbench-wavm
 
-Benckmarking the Faust generated wasm code can be done using the **faustbench-wavm** tool:
+Benchmarking the Faust generated wasm code can be done using the **faustbench-wavm** tool:
 
-`faustbench-wavm foo.wasm`
+`faustbench-wavm [-emcc] [-run <num>] foo.wasm`
+
+## impulsewavm
+
+This **impulsewavm** is designed to be deployed in the Faust2 [impulse-tests](https://github.com/grame-cncm/faust/tree/faust2/tests/impulse-tests) compiler backend test infrastructure. 
+
+`impulsewavm foo.wasm` runs the impulse-test on foo.wasm code.
+
+All impulse-tests have been validated september the 14th.
+
