@@ -47,7 +47,7 @@ DEFINE_INTRINSIC_FUNCTION1(global.Math,cos,cos,f32,f32,value) { return std::cos(
 DEFINE_INTRINSIC_FUNCTION1(global.Math,exp,exp,f32,f32,value) { return std::exp(value); }
 DEFINE_INTRINSIC_FUNCTION2(asm2wasm,fmod,fmod,f32,f32,left,f32,right) { return std::fmod(left,right); }
 DEFINE_INTRINSIC_FUNCTION1(global.Math,log,log,f32,f32,value) { return std::log(value); }
-DEFINE_INTRINSIC_FUNCTION1(asm2wasm,log10,log10,f32,f32,value) { return std::log10(value); }
+DEFINE_INTRINSIC_FUNCTION1(global.Math,log10,log10,f32,f32,value) { return std::log10(value); }
 DEFINE_INTRINSIC_FUNCTION2(global.Math,pow,pow,f32,f32,left,f32,right) { return std::pow(left,right); }
 DEFINE_INTRINSIC_FUNCTION2(asm2wasm,remainder,remainder,f32,f32,left,f32,right) { return std::remainder(left,right); }
 DEFINE_INTRINSIC_FUNCTION1(global.Math,round,round,f32,f32,value) { return std::round(value); }
@@ -63,7 +63,7 @@ DEFINE_INTRINSIC_FUNCTION1(global.Math,cos,cos,f64,f64,value) { return std::cos(
 DEFINE_INTRINSIC_FUNCTION1(global.Math,exp,exp,f64,f64,value) { return std::exp(value); }
 DEFINE_INTRINSIC_FUNCTION2(asm2wasm,fmod,fmod,f64,f64,left,f64,right) { return std::fmod(left,right); }
 DEFINE_INTRINSIC_FUNCTION1(global.Math,log,log,f64,f64,value) { return std::log(value); }
-DEFINE_INTRINSIC_FUNCTION1(asm2wasm,log10,log10,f64,f64,value) { return std::log10(value); }
+DEFINE_INTRINSIC_FUNCTION1(global.Math,log10,log10,f64,f64,value) { return std::log10(value); }
 DEFINE_INTRINSIC_FUNCTION2(global.Math,pow,pow,f64,f64,left,f64,right) { return std::pow(left,right); }
 DEFINE_INTRINSIC_FUNCTION2(asm2wasm,remainder,remainder,f64,f64,left,f64,right) { return std::remainder(left,right); }
 DEFINE_INTRINSIC_FUNCTION1(global.Math,round,round,f64,f64,value) { return std::round(value); }
