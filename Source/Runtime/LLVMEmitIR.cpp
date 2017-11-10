@@ -18,6 +18,7 @@ namespace LLVMJIT
 		const Module& module;
 		ModuleInstance* moduleInstance;
 
+		std::shared_ptr<llvm::Module> llvmModuleSharedPtr;
 		llvm::Module* llvmModule;
 		std::vector<llvm::Function*> functionDefs;
 		std::vector<llvm::Constant*> importedFunctionPointers;
@@ -27,7 +28,7 @@ namespace LLVMJIT
 		llvm::Constant* defaultMemoryBase;
 		llvm::Constant* defaultMemoryEndOffset;
 		
-		llvm::DIBuilder diBuilder;
+		std::unique_ptr<llvm::DIBuilder> diBuilder;
 		llvm::DICompileUnit* diCompileUnit;
 		llvm::DIFile* diModuleScope;
 
@@ -35,32 +36,40 @@ namespace LLVMJIT
 
 		llvm::MDNode* likelyFalseBranchWeights;
 		llvm::MDNode* likelyTrueBranchWeights;
+		
+		llvm::Value* fpRoundingModeMetadata;
+		llvm::Value* fpExceptionMetadata;
 
 		EmitModuleContext(const Module& inModule,ModuleInstance* inModuleInstance)
 		: module(inModule)
 		, moduleInstance(inModuleInstance)
-		, llvmModule(new llvm::Module("",context))
-		, diBuilder(*llvmModule)
 		{
-			diModuleScope = diBuilder.createFile("unknown","unknown");
-			diCompileUnit = diBuilder.createCompileUnit(0xffff,diModuleScope,"WAVM",true,"",0);
+			llvmModuleSharedPtr = std::make_shared<llvm::Module>("",context);
+			llvmModule = llvmModuleSharedPtr.get();
+			diBuilder = llvm::make_unique<llvm::DIBuilder>(*llvmModule);
+
+			diModuleScope = diBuilder->createFile("unknown","unknown");
+			diCompileUnit = diBuilder->createCompileUnit(0xffff,diModuleScope,"WAVM",true,"",0);
 
 			diValueTypes[(Uptr)ValueType::any] = nullptr;
-			diValueTypes[(Uptr)ValueType::i32] = diBuilder.createBasicType("i32",32,llvm::dwarf::DW_ATE_signed);
-			diValueTypes[(Uptr)ValueType::i64] = diBuilder.createBasicType("i64",64,llvm::dwarf::DW_ATE_signed);
-			diValueTypes[(Uptr)ValueType::f32] = diBuilder.createBasicType("f32",32,llvm::dwarf::DW_ATE_float);
-			diValueTypes[(Uptr)ValueType::f64] = diBuilder.createBasicType("f64",64,llvm::dwarf::DW_ATE_float);
+			diValueTypes[(Uptr)ValueType::i32] = diBuilder->createBasicType("i32",32,llvm::dwarf::DW_ATE_signed);
+			diValueTypes[(Uptr)ValueType::i64] = diBuilder->createBasicType("i64",64,llvm::dwarf::DW_ATE_signed);
+			diValueTypes[(Uptr)ValueType::f32] = diBuilder->createBasicType("f32",32,llvm::dwarf::DW_ATE_float);
+			diValueTypes[(Uptr)ValueType::f64] = diBuilder->createBasicType("f64",64,llvm::dwarf::DW_ATE_float);
 			#if ENABLE_SIMD_PROTOTYPE
-			diValueTypes[(Uptr)ValueType::v128] = diBuilder.createBasicType("v128",128,llvm::dwarf::DW_ATE_signed);
+			diValueTypes[(Uptr)ValueType::v128] = diBuilder->createBasicType("v128",128,llvm::dwarf::DW_ATE_signed);
 			#endif
 			
 			auto zeroAsMetadata = llvm::ConstantAsMetadata::get(emitLiteral(I32(0)));
 			auto i32MaxAsMetadata = llvm::ConstantAsMetadata::get(emitLiteral(I32(INT32_MAX)));
 			likelyFalseBranchWeights = llvm::MDTuple::getDistinct(context,{llvm::MDString::get(context,"branch_weights"),zeroAsMetadata,i32MaxAsMetadata});
 			likelyTrueBranchWeights = llvm::MDTuple::getDistinct(context,{llvm::MDString::get(context,"branch_weights"),i32MaxAsMetadata,zeroAsMetadata});
+
+			fpRoundingModeMetadata = llvm::MetadataAsValue::get(context,llvm::MDString::get(context,"round.tonearest"));
+			fpExceptionMetadata = llvm::MetadataAsValue::get(context,llvm::MDString::get(context,"fpexcept.strict"));
 		}
 
-		llvm::Module* emit();
+		std::shared_ptr<llvm::Module> emit();
 	};
 
 	// The context used by functions involved in JITing a single AST function.
@@ -992,15 +1001,15 @@ namespace LLVMJIT
 		// FP operators
 		//
 
-		EMIT_FP_BINARY_OP(add,irBuilder.CreateFAdd(left,right))
-		EMIT_FP_BINARY_OP(sub,irBuilder.CreateFSub(left,right))
-		EMIT_FP_BINARY_OP(mul,irBuilder.CreateFMul(left,right))
-		EMIT_FP_BINARY_OP(div,irBuilder.CreateFDiv(left,right))
+		EMIT_FP_BINARY_OP(add,irBuilder.CreateCall(getLLVMIntrinsic({left->getType()},llvm::Intrinsic::experimental_constrained_fadd),llvm::ArrayRef<llvm::Value*>({left,right,moduleContext.fpRoundingModeMetadata,moduleContext.fpExceptionMetadata})))
+		EMIT_FP_BINARY_OP(sub,irBuilder.CreateCall(getLLVMIntrinsic({left->getType()},llvm::Intrinsic::experimental_constrained_fsub),llvm::ArrayRef<llvm::Value*>({left,right,moduleContext.fpRoundingModeMetadata,moduleContext.fpExceptionMetadata})))
+		EMIT_FP_BINARY_OP(mul,irBuilder.CreateCall(getLLVMIntrinsic({left->getType()},llvm::Intrinsic::experimental_constrained_fmul),llvm::ArrayRef<llvm::Value*>({left,right,moduleContext.fpRoundingModeMetadata,moduleContext.fpExceptionMetadata})))
+		EMIT_FP_BINARY_OP(div,irBuilder.CreateCall(getLLVMIntrinsic({left->getType()},llvm::Intrinsic::experimental_constrained_fdiv),llvm::ArrayRef<llvm::Value*>({left,right,moduleContext.fpRoundingModeMetadata,moduleContext.fpExceptionMetadata})))
 		EMIT_FP_BINARY_OP(copysign,irBuilder.CreateCall(getLLVMIntrinsic({left->getType()},llvm::Intrinsic::copysign),llvm::ArrayRef<llvm::Value*>({left,right})))
 
 		EMIT_FP_UNARY_OP(neg,irBuilder.CreateFNeg(operand))
 		EMIT_FP_UNARY_OP(abs,irBuilder.CreateCall(getLLVMIntrinsic({operand->getType()},llvm::Intrinsic::fabs),llvm::ArrayRef<llvm::Value*>({operand})))
-		EMIT_FP_UNARY_OP(sqrt,irBuilder.CreateCall(getLLVMIntrinsic({operand->getType()},llvm::Intrinsic::sqrt),llvm::ArrayRef<llvm::Value*>({operand})))
+		EMIT_FP_UNARY_OP(sqrt,irBuilder.CreateCall(getLLVMIntrinsic({operand->getType()},llvm::Intrinsic::experimental_constrained_sqrt),llvm::ArrayRef<llvm::Value*>({operand,moduleContext.fpRoundingModeMetadata,moduleContext.fpExceptionMetadata})))
 
 		EMIT_FP_BINARY_OP(eq,coerceBoolToI32(irBuilder.CreateFCmpOEQ(left,right)))
 		EMIT_FP_BINARY_OP(ne,coerceBoolToI32(irBuilder.CreateFCmpUNE(left,right)))
@@ -1336,10 +1345,11 @@ namespace LLVMJIT
 			}
 		}
 
-		EMIT_UNARY_OP(i32,extend_s_i8,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI8Type),llvmI32Type))
-		EMIT_UNARY_OP(i32,extend_s_i16,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI16Type),llvmI32Type))
-		EMIT_UNARY_OP(i64,extend_s_i8,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI8Type),llvmI64Type))
-		EMIT_UNARY_OP(i64,extend_s_i16,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI16Type),llvmI64Type))
+		EMIT_UNARY_OP(i32,extend8_s,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI8Type),llvmI32Type))
+		EMIT_UNARY_OP(i32,extend16_s,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI16Type),llvmI32Type))
+		EMIT_UNARY_OP(i64,extend8_s,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI8Type),llvmI64Type))
+		EMIT_UNARY_OP(i64,extend16_s,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI16Type),llvmI64Type))
+		EMIT_UNARY_OP(i64,extend32_s,irBuilder.CreateSExt(irBuilder.CreateTrunc(operand,llvmI32Type),llvmI64Type))
 
 		#define EMIT_ATOMIC_LOAD_OP(valueTypeId,name,llvmMemoryType,naturalAlignmentLog2,conversionOp) \
 			void valueTypeId##_##name(AtomicLoadOrStoreImm<naturalAlignmentLog2> imm) \
@@ -1368,8 +1378,6 @@ namespace LLVMJIT
 			}
 		EMIT_ATOMIC_LOAD_OP(i32,atomic_load,llvmI32Type,2,identityConversion)
 		EMIT_ATOMIC_LOAD_OP(i64,atomic_load,llvmI64Type,3,identityConversion)
-		EMIT_ATOMIC_LOAD_OP(f32,atomic_load,llvmF32Type,2,identityConversion)
-		EMIT_ATOMIC_LOAD_OP(f64,atomic_load,llvmF64Type,3,identityConversion)
 
 		EMIT_ATOMIC_LOAD_OP(i32,atomic_load8_s,llvmI8Type,0,irBuilder.CreateSExt)
 		EMIT_ATOMIC_LOAD_OP(i32,atomic_load8_u,llvmI8Type,0,irBuilder.CreateZExt)
@@ -1384,8 +1392,6 @@ namespace LLVMJIT
 
 		EMIT_ATOMIC_STORE_OP(i32,atomic_store,llvmI32Type,2,identityConversion)
 		EMIT_ATOMIC_STORE_OP(i64,atomic_store,llvmI64Type,3,identityConversion)
-		EMIT_ATOMIC_STORE_OP(f32,atomic_store,llvmF32Type,2,identityConversion)
-		EMIT_ATOMIC_STORE_OP(f64,atomic_store,llvmF64Type,3,identityConversion)
 			
 		EMIT_ATOMIC_STORE_OP(i32,atomic_store8,llvmI8Type,0,irBuilder.CreateTrunc)
 		EMIT_ATOMIC_STORE_OP(i32,atomic_store16,llvmI16Type,1,irBuilder.CreateTrunc)
@@ -1530,8 +1536,8 @@ namespace LLVMJIT
 		// Create debug info for the function.
 		llvm::SmallVector<llvm::Metadata*,10> diFunctionParameterTypes;
 		for(auto parameterType : functionType->parameters) { diFunctionParameterTypes.push_back(moduleContext.diValueTypes[(Uptr)parameterType]); }
-		auto diFunctionType = moduleContext.diBuilder.createSubroutineType(moduleContext.diBuilder.getOrCreateTypeArray(diFunctionParameterTypes));
-		diFunction = moduleContext.diBuilder.createFunction(
+		auto diFunctionType = moduleContext.diBuilder->createSubroutineType(moduleContext.diBuilder->getOrCreateTypeArray(diFunctionParameterTypes));
+		diFunction = moduleContext.diBuilder->createFunction(
 			moduleContext.diModuleScope,
 			functionInstance->debugName,
 			llvmFunction->getName(),
@@ -1619,7 +1625,7 @@ namespace LLVMJIT
 		else { irBuilder.CreateRet(pop()); }
 	}
 
-	llvm::Module* EmitModuleContext::emit()
+	std::shared_ptr<llvm::Module> EmitModuleContext::emit()
 	{
 		Timing::Timer emitTimer;
 
@@ -1672,14 +1678,14 @@ namespace LLVMJIT
 		{ EmitFunctionContext(*this,module,module.functions.defs[functionDefIndex],moduleInstance->functionDefs[functionDefIndex],functionDefs[functionDefIndex]).emit(); }
 		
 		// Finalize the debug info.
-		diBuilder.finalize();
+		diBuilder->finalize();
 
 		Timing::logRatePerSecond("Emitted LLVM IR",emitTimer,(F64)llvmModule->size(),"functions");
 
-		return llvmModule;
+		return llvmModuleSharedPtr;
 	}
 
-	llvm::Module* emitModule(const Module& module,ModuleInstance* moduleInstance)
+	std::shared_ptr<llvm::Module> emitModule(const Module& module,ModuleInstance* moduleInstance)
 	{
 		return EmitModuleContext(module,moduleInstance).emit();
 	}
