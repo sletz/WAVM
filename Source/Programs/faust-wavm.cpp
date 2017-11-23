@@ -104,7 +104,7 @@ int mainBody(const char* filename_aux, int argc, char** args)
     // Create JACK audio driver with the DSP
     jackaudio_midi audio;
     
-    if (!audio.init(basename((char*)filename), DSP, true)) {
+    if (!audio.init(basename((char*)filename), DSP)) {
         return 0;
     }
     
