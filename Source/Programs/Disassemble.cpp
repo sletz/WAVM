@@ -27,3 +27,33 @@ int commandMain(int argc,char** argv)
 
 	return EXIT_SUCCESS;
 }
+
+int main(int argc,char** argv)
+{
+    int result = 0;
+    try
+    {
+        Runtime::catchRuntimeExceptions(
+                                        [&]
+                                        {
+                                            result = commandMain(argc,argv);
+                                        },
+                                        [&](Runtime::Exception&& exception)
+                                        {
+                                            std::cerr << "Runtime exception: " << describeException(exception) << std::endl;
+                                            result = EXIT_FAILURE;
+                                        });
+    }
+    catch(IR::ValidationException exception)
+    {
+        std::cerr << "Failed to validate module: " << exception.message << std::endl;
+        result = EXIT_FAILURE;
+    }
+    catch(Serialization::FatalSerializationException exception)
+    {
+        std::cerr << "Fatal serialization exception: " << exception.message << std::endl;
+        result = EXIT_FAILURE;
+    }
+    
+    return result;
+}

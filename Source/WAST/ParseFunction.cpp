@@ -25,6 +25,7 @@ namespace
 
 		NameToIndexMap branchTargetNameToIndexMap;
 		U32 branchTargetDepth;
+		std::vector<std::string> labelDisassemblyNames;
 
 		Serialization::ArrayOutputStream codeByteStream;
 		OperatorEncoderStream operationEncoder;
@@ -285,12 +286,42 @@ static void parseImm(FunctionParseState& state,AtomicLoadOrStoreImm<naturalAlign
 }
 #endif
 
+#if ENABLE_EXCEPTION_PROTOTYPE
+static void parseImm(FunctionParseState& state,CatchImm& outImm)
+{
+	outImm.exceptionTypeIndex = parseAndResolveNameOrIndexRef(
+		state,
+		state.moduleState.exceptionTypeNameToIndexMap,
+		state.moduleState.module.exceptionTypes.size(),
+		"exception type"
+		);
+}
+static void parseImm(FunctionParseState& state,ThrowImm& outImm)
+{
+	outImm.exceptionTypeIndex = parseAndResolveNameOrIndexRef(
+		state,
+		state.moduleState.exceptionTypeNameToIndexMap,
+		state.moduleState.module.exceptionTypes.size(),
+		"exception type"
+		);
+}
+static void parseImm(FunctionParseState& state,RethrowImm& outImm)
+{
+	if(!tryParseAndResolveBranchTargetRef(state,outImm.catchDepth))
+	{
+		parseErrorf(state,state.nextToken,"expected try label or index");
+		throw RecoverParseException();
+	}
+}
+#endif
+
 static void parseInstrSequence(FunctionParseState& state);
 static void parseExpr(FunctionParseState& state);
 
 static void parseControlImm(FunctionParseState& state,Name& outBranchTargetName,ControlStructureImm& imm)
 {
 	tryParseName(state,outBranchTargetName);
+	state.labelDisassemblyNames.push_back(outBranchTargetName.getString());
 	
 	imm.resultType = ResultType::none;
 	if(state.nextToken[0].type == t_leftParenthesis && state.nextToken[1].type == t_result)
@@ -512,6 +543,51 @@ static void parseInstrSequence(FunctionParseState& state)
 
 				break;
 			}
+			case t_try_:
+			{
+				++state.nextToken;
+
+				Name branchTargetName;
+				ControlStructureImm imm;
+				parseControlImm(state,branchTargetName,imm);
+				
+				ScopedBranchTarget branchTarget(state,branchTargetName);
+				state.validatingCodeStream.try_(imm);
+
+				// Parse the try clause.
+				parseInstrSequence(state);
+
+				// Parse catch clauses.
+				while(state.nextToken->type != t_end)
+				{
+					if(state.nextToken->type == t_catch_)
+					{
+						++state.nextToken;
+						CatchImm catchImm;
+						parseImm(state,catchImm);
+						state.validatingCodeStream.catch_(catchImm);
+						parseInstrSequence(state);
+					}
+					else if(state.nextToken->type == t_catch_all)
+					{
+						++state.nextToken;
+						state.validatingCodeStream.catch_all();
+						parseInstrSequence(state);
+					}
+					else
+					{
+						parseErrorf(state,state.nextToken,"expected 'catch', 'catch_all', or 'end' following 'try'");
+					}
+				};
+
+				require(state,t_end);
+				parseAndValidateRedundantBranchTargetName(state,branchTargetName,"try","end");
+				state.validatingCodeStream.end();
+
+				break;
+			}
+			case t_catch_: return;
+			case t_catch_all: return;
 			#define VISIT_OP(opcode,name,nameString,Imm,...) case t_##name: parseOp_##name(state,false); break;
 			ENUM_NONCONTROL_OPERATORS(VISIT_OP)
 			#undef VISIT_OP
@@ -607,6 +683,7 @@ namespace WAST
 				catch(RecoverParseException) {}
 				catch(FatalParseException) {}
 				functionDef.code = std::move(functionState.codeByteStream.getBytes());
+				state.disassemblyNames.functions[functionIndex].labels = std::move(functionState.labelDisassemblyNames);
 			});
 		});
 

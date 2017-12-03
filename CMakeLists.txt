@@ -25,6 +25,9 @@ if(MSVC)
 	add_definitions(-D__STDC_FORMAT_MACROS)
 	add_definitions(-D__STDC_LIMIT_MACROS)
 
+	# Compile files in parallel.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+
 	# Compile with all warnings and fatal warnings
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX")
 	if(CMAKE_CXX_FLAGS MATCHES "/W[0-4]")
@@ -102,6 +105,13 @@ else()
 	add_definitions("-DENABLE_THREADING_PROTOTYPE=0")
 endif()
 
+option(ENABLE_EXCEPTION_PROTOTYPE "enables the prototype implementation of the proposed WebAssembly threading extension" ON)
+if(ENABLE_EXCEPTION_PROTOTYPE)
+	add_definitions("-DENABLE_EXCEPTION_PROTOTYPE=1")
+else()
+	add_definitions("-DENABLE_EXCEPTION_PROTOTYPE=0")
+endif()
+
 add_subdirectory(Include/Inline)
 
 add_subdirectory(Source/Emscripten)
@@ -114,3 +124,4 @@ add_subdirectory(Source/WASM)
 add_subdirectory(Source/WAST)
 
 add_subdirectory(Test/spec)
+add_subdirectory(Test/WAVM)

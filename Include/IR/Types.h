@@ -38,7 +38,6 @@ namespace IR
 	inline std::string asString(F32 value) { return Floats::asString(value); }
 	inline std::string asString(F64 value) { return Floats::asString(value); }
 
-	#if ENABLE_SIMD_PROTOTYPE	
 	inline std::string asString(const V128& v128)
 	{
 		// buffer needs 44 characters:
@@ -48,6 +47,7 @@ namespace IR
 		return std::string(buffer);
 	}
 
+	#if ENABLE_SIMD_PROTOTYPE
 	template<> struct ValueTypeInfo<ValueType::v128> { typedef V128 Value; };
 	#endif
 	
@@ -148,6 +148,11 @@ namespace IR
 	{
 		U32 index;
 	};
+
+	struct IndexedExceptionType
+	{
+		U32 index;
+	};
 	
 	inline std::string asString(const std::vector<ValueType>& typeTuple)
 	{
@@ -234,13 +239,36 @@ namespace IR
 		friend bool operator<=(const GlobalType& left,const GlobalType& right) { return left.valueType == right.valueType && left.isMutable == right.isMutable; }
 		friend bool operator>(const GlobalType& left,const GlobalType& right) { return !(left <= right); }
 	};
-	
+
 	inline std::string asString(const GlobalType& globalType)
 	{
 		if(globalType.isMutable) { return std::string("global ") + asString(globalType.valueType); }
 		else { return std::string("immutable ") + asString(globalType.valueType); }
 	}
+	
+	// The type of a tuple
+	struct TupleType
+	{
+		std::vector<ValueType> elements;
 
+		friend bool operator==(const TupleType& left,const TupleType& right)
+		{
+			return left.elements == right.elements;
+		}
+	};
+	
+	inline std::string asString(const TupleType& tupleType)
+	{
+		std::string result = "(";
+		for(auto elementType : tupleType.elements)
+		{
+			if(result.size()) { result += ','; }
+			result += asString(elementType);
+		}
+		result += ')';
+		return result;
+	}
+	
 	// The type of an object
 	enum class ObjectKind : U8
 	{
@@ -249,7 +277,8 @@ namespace IR
 		memory = 2,
 		global = 3,
 		module = 4,
-		max = 4,
+		exceptionType = 5,
+		max = 5,
 		invalid = 0xff,
 	};
 	struct ObjectType
@@ -261,6 +290,7 @@ namespace IR
 		ObjectType(TableType inTable)			: kind(ObjectKind::table), table(inTable) {}
 		ObjectType(MemoryType inMemory)		: kind(ObjectKind::memory), memory(inMemory) {}
 		ObjectType(GlobalType inGlobal)			: kind(ObjectKind::global), global(inGlobal) {}
+		ObjectType(ObjectKind inKind)			: kind(inKind) {}
 
 		friend const FunctionType* asFunctionType(const ObjectType& objectType)
 		{
@@ -302,6 +332,7 @@ namespace IR
 		case ObjectKind::table: return "table";
 		case ObjectKind::memory: return "memory";
 		case ObjectKind::global: return asString(asGlobalType(objectType));
+		case ObjectKind::exceptionType: return "exception_type";
 		default: Errors::unreachable();
 		};
 	}

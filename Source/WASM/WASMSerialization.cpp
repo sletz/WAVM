@@ -156,6 +156,12 @@ namespace IR
 		serialize(stream,globalDef.type);
 		serialize(stream,globalDef.initializer);
 	}
+	
+	template<typename Stream>
+	void serialize(Stream& stream,ExceptionTypeDef& exceptionTypeDef)
+	{
+		serialize(stream,exceptionTypeDef.type);
+	}
 
 	template<typename Stream>
 	void serialize(Stream& stream,DataSegment& dataSegment)
@@ -295,13 +301,13 @@ namespace WASM
 		serializeVarUInt1(stream,reserved);
 	}
 
+	template<typename Stream>
+	void serialize(Stream& stream,V128& v128)
+	{
+		serializeNativeValue(stream,v128);
+	}
+
 	#if ENABLE_SIMD_PROTOTYPE
-		template<typename Stream>
-		void serialize(Stream& stream,V128& v128)
-		{
-			serializeNativeValue(stream,v128);
-		}
-	
 		template<typename Stream,Uptr numLanes>
 		void serialize(Stream& stream,LaneIndexImm<numLanes>& imm,const FunctionDef&)
 		{
@@ -328,7 +334,25 @@ namespace WASM
 			serializeVarUInt32(stream,imm.offset);
 		}
 	#endif
-		
+
+	#if ENABLE_EXCEPTION_PROTOTYPE
+		template<typename Stream>
+		void serialize(Stream& stream,CatchImm& imm,const FunctionDef&)
+		{
+			serializeVarUInt32(stream,imm.exceptionTypeIndex);
+		}
+		template<typename Stream>
+		void serialize(Stream& stream,ThrowImm& imm,const FunctionDef&)
+		{
+			serializeVarUInt32(stream,imm.exceptionTypeIndex);
+		}
+		template<typename Stream>
+		void serialize(Stream& stream,RethrowImm& imm,const FunctionDef&)
+		{
+			serializeVarUInt32(stream,imm.catchDepth);
+		}
+	#endif
+
 	template<typename Stream,typename Value>
 	void serialize(Stream& stream,LiteralImm<Value>& imm,const FunctionDef&)
 	{ serialize(stream,imm.value); }
