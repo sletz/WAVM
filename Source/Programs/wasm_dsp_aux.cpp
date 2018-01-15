@@ -23,6 +23,8 @@
 #include <sstream>
 #include <cmath>
 
+#include <string.h>
+
 #include "Runtime/Intrinsics.h"
 #include "IR/Module.h"
 #include "Runtime/Linker.h"
@@ -35,6 +37,7 @@ using namespace Runtime;
 
 // Module imported mathematical functions
 
+/*
 // Integer version
 DEFINE_INTRINSIC_FUNCTION1(env,abs,abs,i32,i32,value) { return std::abs(value); }
 
@@ -69,6 +72,47 @@ DEFINE_INTRINSIC_FUNCTION2(env,remainder,remainder,f64,f64,left,f64,right) { ret
 DEFINE_INTRINSIC_FUNCTION1(env,round,round,f64,f64,value) { return std::round(value); }
 DEFINE_INTRINSIC_FUNCTION1(env,sin,sin,f64,f64,value) { return std::sin(value); }
 DEFINE_INTRINSIC_FUNCTION1(env,tan,tan,f64,f64,value) { return std::tan(value); }
+*/
+
+DEFINE_INTRINSIC_FUNCTION3(env,_memset,_memset,i32,i32,v1,i32,v2,i32,v3)
+{
+    //return reinterpret_cast<int>(memset(reinterpret_cast<void *>(v1),static_cast<int>(v2),static_cast<size_t>(v3)));
+    return 0;
+}
+
+// Integer version
+
+// Float (= f32) version
+DEFINE_INTRINSIC_FUNCTION1(env,_acosf,_acosf,f32,f32,value) { return std::acos(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_asinf,_asinf,f32,f32,value) { return std::asin(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_atanf,_atanf,f32,f32,value) { return std::atan(value); }
+DEFINE_INTRINSIC_FUNCTION2(env,_atan2f,_atan2f,f32,f32,left,f32,right) { return std::atan2(left,right); }
+DEFINE_INTRINSIC_FUNCTION1(env,_cosf,_cosf,f32,f32,value) { return std::cos(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_expf,_expf,f32,f32,value) { return std::exp(value); }
+DEFINE_INTRINSIC_FUNCTION2(env,_fmodf,_fmodf,f32,f32,left,f32,right) { return std::fmod(left,right); }
+DEFINE_INTRINSIC_FUNCTION1(env,_logf,_logf,f32,f32,value) { return std::log(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_log10f,_log10f,f32,f32,value) { return std::log10(value); }
+DEFINE_INTRINSIC_FUNCTION2(env,_powf,_powf,f32,f32,left,f32,right) { return std::pow(left,right); }
+DEFINE_INTRINSIC_FUNCTION2(env,_remainderf,_remainderf,f32,f32,left,f32,right) { return std::remainder(left,right); }
+DEFINE_INTRINSIC_FUNCTION1(env,_roundf,_roundf,f32,f32,value) { return std::round(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_sinf,_sinf,f32,f32,value) { return std::sin(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_tanf,_tanf,f32,f32,value) { return std::tan(value); }
+
+// Double (= f64) version
+DEFINE_INTRINSIC_FUNCTION1(env,_acos,_acos,f64,f64,value) { return std::acos(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_asin,_asin,f64,f64,value) { return std::asin(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_atan,_atan,f64,f64,value) { return std::atan(value); }
+DEFINE_INTRINSIC_FUNCTION2(env,_atan2,_atan2,f64,f64,left,f64,right) { return std::atan2(left,right); }
+DEFINE_INTRINSIC_FUNCTION1(env,_cos,_cos,f64,f64,value) { return std::cos(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_exp,_exp,f64,f64,value) { return std::exp(value); }
+DEFINE_INTRINSIC_FUNCTION2(env,_fmod,_fmod,f64,f64,left,f64,right) { return std::fmod(left,right); }
+DEFINE_INTRINSIC_FUNCTION1(env,_log,_log,f64,f64,value) { return std::log(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_log10,_log10,f64,f64,value) { return std::log10(value); }
+DEFINE_INTRINSIC_FUNCTION2(env,_pow,_pow,f64,f64,left,f64,right) { return std::pow(left,right); }
+DEFINE_INTRINSIC_FUNCTION2(env,_remainder,_remainder,f64,f64,left,f64,right) { return std::remainder(left,right); }
+DEFINE_INTRINSIC_FUNCTION1(env,_round,_round,f64,f64,value) { return std::round(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_sin,_sin,f64,f64,value) { return std::sin(value); }
+DEFINE_INTRINSIC_FUNCTION1(env,_tan,_tan,f64,f64,value) { return std::tan(value); }
 
 // Tools for Module import
 
