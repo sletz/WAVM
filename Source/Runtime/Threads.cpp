@@ -176,13 +176,13 @@ static U32 wakeAddress(Uptr address,U32 numToWake)
 
 	// Open the wait list for this address.
 	WaitList* waitList = openWaitList(address);
+	Uptr actualNumToWake = numToWake;
 	{
 		Platform::Lock waitListLock(waitList->mutex);
 
 		// Determine how many threads to wake.
 		// numToWake==UINT32_MAX means wake all waiting threads.
-		Uptr actualNumToWake = numToWake;
-		if(numToWake == UINT32_MAX || numToWake > waitList->wakeEvents.size())
+		if(actualNumToWake == UINT32_MAX || actualNumToWake > waitList->wakeEvents.size())
 		{
 			actualNumToWake = waitList->wakeEvents.size();
 		}
@@ -198,7 +198,11 @@ static U32 wakeAddress(Uptr address,U32 numToWake)
 	}
 	closeWaitList(address,waitList);
 
-	return numToWake;
+	if(actualNumToWake > UINT32_MAX)
+	{
+		Runtime::throwException(Runtime::Exception::integerDivideByZeroOrIntegerOverflowType);
+	}
+	return U32(actualNumToWake);
 }
 
 namespace Runtime
@@ -218,7 +222,7 @@ namespace Runtime
 		};
 	}
 
-	DEFINE_INTRINSIC_FUNCTION3(wavmIntrinsics,wake,wake,i32,i32,addressOffset,i32,numToWake,i64,memoryInstanceBits)
+	DEFINE_INTRINSIC_FUNCTION3(wavmIntrinsics,atomic_wake,atomic_wake,i32,i32,addressOffset,i32,numToWake,i64,memoryInstanceBits)
 	{
 		MemoryInstance* memoryInstance = reinterpret_cast<MemoryInstance*>(memoryInstanceBits);
 
@@ -230,7 +234,7 @@ namespace Runtime
 		return wakeAddress(address,numToWake);
 	}
 
-	DEFINE_INTRINSIC_FUNCTION4(wavmIntrinsics,wait,wait,i32,i32,addressOffset,i32,expectedValue,f64,timeout,i64,memoryInstanceBits)
+	DEFINE_INTRINSIC_FUNCTION4(wavmIntrinsics,atomic_wait,atomic_wait,i32,i32,addressOffset,i32,expectedValue,f64,timeout,i64,memoryInstanceBits)
 	{
 		MemoryInstance* memoryInstance = reinterpret_cast<MemoryInstance*>(memoryInstanceBits);
 
@@ -241,7 +245,7 @@ namespace Runtime
 		I32* valuePointer = reinterpret_cast<I32*>(getMemoryBaseAddress(memoryInstance) + addressOffset);
 		return waitOnAddress(valuePointer,expectedValue,timeout);
 	}
-	DEFINE_INTRINSIC_FUNCTION4(wavmIntrinsics,wait,wait,i32,i32,addressOffset,i64,expectedValue,f64,timeout,i64,memoryInstanceBits)
+	DEFINE_INTRINSIC_FUNCTION4(wavmIntrinsics,atomic_wait,atomic_wait,i32,i32,addressOffset,i64,expectedValue,f64,timeout,i64,memoryInstanceBits)
 	{
 		MemoryInstance* memoryInstance = reinterpret_cast<MemoryInstance*>(memoryInstanceBits);
 

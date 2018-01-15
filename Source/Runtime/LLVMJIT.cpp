@@ -11,6 +11,7 @@
 	#define DUMP_UNOPTIMIZED_MODULE 1
 	#define VERIFY_MODULE 1
 	#define DUMP_OPTIMIZED_MODULE 1
+	#define DUMP_OBJECT 1
 	#define PRINT_DISASSEMBLY 1
 	#define PRINT_SEH_TABLES 0
 #else
@@ -18,6 +19,7 @@
 	#define DUMP_UNOPTIMIZED_MODULE 1
 	#define VERIFY_MODULE 0
 	#define DUMP_OPTIMIZED_MODULE 1
+	#define DUMP_OBJECT 0
 	#define PRINT_DISASSEMBLY 0
 	#define PRINT_SEH_TABLES 0
 #endif
@@ -425,6 +427,20 @@ namespace LLVMJIT
 		// Make a copy of the loaded object info for use by the finalizer.
 		jitUnit->loadedObjects.push_back(LoadedObject {object.get()->getBinary(),&loadedObject});
 
+		#if DUMP_OBJECT
+		{
+			// Dump the object file.
+			std::error_code errorCode;
+			static Uptr dumpedObjectId = 0;
+			std::string augmentedFilename = std::string("jitObject") + std::to_string(dumpedObjectId++) + ".o";
+			llvm::raw_fd_ostream dumpFileStream(augmentedFilename,errorCode,llvm::sys::fs::OpenFlags::F_None);
+			dumpFileStream.write(
+				(const char*)object->getBinary()->getData().bytes_begin(),
+				object->getBinary()->getData().size());
+			Log::printf(Log::Category::debug,"Dumped object file to: %s\n",augmentedFilename.c_str()); 
+		}
+		#endif
+
 		#ifdef _WIN64
 			// The LLVM dynamic loader doesn't correctly apply the IMAGE_REL_AMD64_ADDR32NB relocations
 			// in the pdata and xdata sections (https://github.com/llvm-mirror/llvm/blob/e84d8c12d5157a926db15976389f703809c49aa5/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h#L96)
@@ -459,7 +475,7 @@ namespace LLVMJIT
 			trampolineBytes[0] = 0xff;
 			trampolineBytes[1] = 0x25;
 			*(U32*)&trampolineBytes[2] = 0;
-			*(U64*)&trampolineBytes[6] = U64(NullResolver::singleton->findSymbol("__C_specific_handler").getAddress().get());
+			*(U64*)&trampolineBytes[6] = U64(cantFail(NullResolver::singleton->findSymbol("__C_specific_handler").getAddress()));
 			jitUnit->sehTrampolineAddress = reinterpret_cast<Uptr>(trampolineBytes);
 		#endif
 	}
@@ -474,7 +490,7 @@ namespace LLVMJIT
 		while(numBytesRemaining)
 		{
 			char instructionBuffer[256];
-			const Uptr numInstructionBytes = LLVMDisasmInstruction(
+			Uptr numInstructionBytes = LLVMDisasmInstruction(
 				disasmRef,
 				nextByte,
 				numBytesRemaining,
@@ -482,7 +498,7 @@ namespace LLVMJIT
 				instructionBuffer,
 				sizeof(instructionBuffer)
 				);
-			assert(numInstructionBytes > 0);
+			if(numInstructionBytes == 0) { numInstructionBytes = 1; }
 			assert(numInstructionBytes <= numBytesRemaining);
 			numBytesRemaining -= numInstructionBytes;
 			nextByte += numInstructionBytes;

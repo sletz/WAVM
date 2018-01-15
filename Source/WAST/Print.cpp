@@ -1,12 +1,15 @@
 #include "Inline/BasicTypes.h"
 #include "Inline/Floats.h"
+#include "Inline/Serialization.h"
 #include "WAST.h"
 #include "IR/Module.h"
 #include "IR/Operators.h"
+#include "Logging/Logging.h"
 
-#include <map>
+#include <set>
 
 using namespace IR;
+using namespace Serialization;
 
 namespace WAST
 {
@@ -114,12 +117,14 @@ namespace WAST
 	void print(std::string& string,const TableType& type)
 	{
 		print(string,type.size);
+		if(type.isShared) { string += " shared"; }
 		string += " anyfunc";
 	}
 
 	void print(std::string& string,const MemoryType& type)
 	{
 		print(string,type.size);
+		if(type.isShared) { string += " shared"; }
 	}
 
 	void print(std::string& string,GlobalType type)
@@ -131,20 +136,29 @@ namespace WAST
 
 	struct NameScope
 	{
-		NameScope(const char inSigil): sigil(inSigil) { nameToCountMap[""] = 0; }
+		NameScope(const char inSigil): sigil(inSigil) { nameSet.insert(""); }
 		
 		void map(std::string& name)
 		{
-			auto mapIt = nameToCountMap.find(name);
-			if(mapIt == nameToCountMap.end()) { nameToCountMap[name] = 1; }
-			else { name = name + std::to_string(mapIt->second++); }
+			if(nameSet.count(name))
+			{
+				std::string baseName = name;
+				Uptr uniqueIndex = 0;
+				do
+				{
+					++uniqueIndex;
+					name = baseName + '_' + std::to_string(uniqueIndex);
+				}
+				while(nameSet.count(name));
+			}
+			nameSet.insert(name);
 			name = sigil + name;
 		}
 
 	private:
 
 		char sigil;
-		std::map<std::string,Uptr> nameToCountMap;
+		std::set<std::string> nameSet;
 	};
 
 	struct ModulePrintContext
@@ -634,6 +648,16 @@ namespace WAST
 			}
 		}
 
+		// Print the start function.
+		if(module.startFunctionIndex != UINTPTR_MAX)
+		{
+			string += '\n';
+			ScopedTagPrinter startTag(string,"start");
+			string += ' ';
+			string += names.functions[module.startFunctionIndex].name;
+		}
+
+		// Print the function definitions.
 		for(Uptr functionDefIndex = 0;functionDefIndex < module.functions.defs.size();++functionDefIndex)
 		{
 			const Uptr functionIndex = module.functions.imports.size() + functionDefIndex;
@@ -705,6 +729,220 @@ namespace WAST
 					string += "\n\"";
 					string += escapeString((const char*)userSection.data.data() + offset,std::min(userSection.data.size() - offset,(Uptr)numBytesPerLine));
 					string += "\"";
+				}
+				if(userSection.name == "linking")
+				{	
+					// Print a comment that describes the contents of the linking section.
+					std::string linkingSectionString;
+					Uptr indentDepth = 1;
+					linkingSectionString += "\n(; linking section:" INDENT_STRING;
+					try
+					{
+						MemoryInputStream stream(userSection.data.data(),userSection.data.size());
+
+						enum class LinkingSubsectionType
+						{
+							invalid = 0,
+							symbolInfo = 2,
+							dataSize = 3,
+							segmentInfo = 5,
+							initFuncs = 6,
+							comdatInfo = 7,
+						};
+
+						enum class COMDATKind
+						{
+							data = 0,
+							function = 1,
+						};
+
+						while(stream.capacity())
+						{
+							U8 subsectionType = (U8)LinkingSubsectionType::invalid;
+							serializeVarUInt7(stream,subsectionType);
+
+							Uptr numSubsectionBytes = 0;
+							serializeVarUInt32(stream,numSubsectionBytes);
+
+							MemoryInputStream substream(stream.advance(numSubsectionBytes),numSubsectionBytes);
+							switch((LinkingSubsectionType)subsectionType)
+							{
+							case LinkingSubsectionType::symbolInfo:
+							{
+								linkingSectionString += "\nSymbols:" INDENT_STRING;
+								++indentDepth;
+
+								Uptr numSymbols = 0;
+								serializeVarUInt32(substream,numSymbols);
+								for(Uptr symbolIndex = 0;symbolIndex < numSymbols;++symbolIndex)
+								{
+									std::string symbolName;
+									serialize(substream,symbolName);
+								
+									U32 flags = 0;
+									serializeVarUInt32(substream,flags);
+
+									linkingSectionString += "\n";
+									linkingSectionString += symbolName;
+
+									if(flags & 1) { linkingSectionString += " *WEAK*"; flags &= ~1; }
+									if(flags & 2) { linkingSectionString += " *LOCAL*"; flags &= ~2; }
+									if(flags & 4) { linkingSectionString += " *HIDDEN*"; flags &= ~4; }
+									if(flags) { linkingSectionString += " OtherFlags=" + std::to_string(flags); }
+								}
+
+								linkingSectionString += DEDENT_STRING;
+								--indentDepth;
+								break;
+							}
+							case LinkingSubsectionType::dataSize:
+							{
+								Uptr dataSize = 0;
+								serializeVarUInt32(substream,dataSize);
+								linkingSectionString += "\nDataSize: " + std::to_string(dataSize);
+								break;
+							}
+							case LinkingSubsectionType::segmentInfo:
+							{
+								linkingSectionString += "\nSegments:" INDENT_STRING;
+								++indentDepth;
+
+								Uptr numSegments = 0;
+								serializeVarUInt32(substream,numSegments);
+								for(Uptr segmentIndex = 0;segmentIndex < numSegments;++segmentIndex)
+								{
+									std::string segmentName;
+									serialize(substream,segmentName);
+
+									Uptr alignment = 0;
+									Uptr flags = 0;
+									serializeVarUInt32(substream,alignment);
+									serializeVarUInt32(substream,flags);
+
+									linkingSectionString += "\n";
+									linkingSectionString += segmentName;
+									linkingSectionString += " alignment=" + std::to_string(1<<alignment);
+									linkingSectionString += " flags=" + std::to_string(flags);
+								}
+
+								linkingSectionString += DEDENT_STRING;
+								--indentDepth;
+								break;
+							}
+							case LinkingSubsectionType::initFuncs:
+							{
+								linkingSectionString += "\nInit funcs:" INDENT_STRING;
+								++indentDepth;
+
+								Uptr numInitFuncs = 0;
+								serializeVarUInt32(substream,numInitFuncs);
+								for(Uptr initFuncIndex = 0;initFuncIndex < numInitFuncs;++initFuncIndex)
+								{
+									Uptr priority = 0;
+									Uptr functionIndex = 0;
+									serializeVarUInt32(substream,priority);
+									serializeVarUInt32(substream,functionIndex);
+
+									linkingSectionString += "\n";
+									linkingSectionString += "PRIORITY=" + std::to_string(priority);
+									if(functionIndex < names.functions.size())
+									{
+										linkingSectionString += ' ' + names.functions[functionIndex].name;
+									}
+									else
+									{
+										linkingSectionString += " <invalid function index " + std::to_string(functionIndex) + ">";
+									}
+								}
+
+								linkingSectionString += DEDENT_STRING;
+								--indentDepth;
+								break;
+							}
+							case LinkingSubsectionType::comdatInfo:
+							{
+								linkingSectionString += "\nComdats:" INDENT_STRING;
+								++indentDepth;
+
+								Uptr numComdats = 0;
+								serializeVarUInt32(substream,numComdats);
+								for(Uptr comdatIndex = 0; comdatIndex < numComdats; ++comdatIndex)
+								{
+									std::string comdatName;
+									serialize(substream,comdatName);
+
+									U32 flags = 0;
+									serializeVarUInt32(substream,flags);
+
+									linkingSectionString += "\n";
+									linkingSectionString += comdatName;
+
+									if(flags) { linkingSectionString += " OtherFlags=" + std::to_string(flags); }
+
+									linkingSectionString += INDENT_STRING;
+									++indentDepth;
+
+									Uptr numSymbols = 0;
+									serializeVarUInt32(substream,numSymbols);
+									for(Uptr symbolIndex = 0; symbolIndex < numSymbols; ++symbolIndex)
+									{
+										U32 kind = 0;
+										U32 index = 0;
+										serializeVarUInt32(substream,kind);
+										serializeVarUInt32(substream,index);
+
+										linkingSectionString += "\nSymbol: ";
+										switch((COMDATKind)kind)
+										{
+										case COMDATKind::data:
+											linkingSectionString += "data segment ";
+											linkingSectionString += std::to_string(index);
+											break;
+										case COMDATKind::function:
+											linkingSectionString += "function ";
+											if(index >= names.functions.size())
+											{
+												linkingSectionString += "Invalid COMDAT function index " + std::to_string(index);
+												throw FatalSerializationException("Invalid COMDAT function index");
+											}
+											linkingSectionString += names.functions[index].name;
+											break;
+										default:
+											linkingSectionString += "\nUnknown comdat kind: " + std::to_string(kind);
+											throw FatalSerializationException("Unknown COMDAT kind");
+											break;
+										};
+
+									}
+
+									linkingSectionString += DEDENT_STRING;
+									--indentDepth;
+								}
+
+								linkingSectionString += DEDENT_STRING;
+								--indentDepth;
+								break;
+							}
+							default:
+								linkingSectionString += "\nUnknown WASM linking subsection type: " + std::to_string(subsectionType);
+								throw FatalSerializationException("Unknown linking subsection type");
+								break;
+							};
+						};
+					}
+					catch(FatalSerializationException)
+					{
+						linkingSectionString += "\nFatal serialization exception!";
+						while(indentDepth > 1)
+						{
+							linkingSectionString += DEDENT_STRING;
+							--indentDepth;
+						};
+					}
+					assert(indentDepth == 1);
+					linkingSectionString += DEDENT_STRING "\n;)";
+
+					string += linkingSectionString;
 				}
 			}
 		}

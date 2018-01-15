@@ -248,7 +248,7 @@ namespace Platform
 
 	bool catchSignals(
 		const std::function<void()>& thunk,
-		const std::function<void(SignalType,void*,const CallStack&)>& handler
+		const std::function<void(SignalType,void*,CallStack&&)>& handler
 		)
 	{
 		initThread();
@@ -273,7 +273,7 @@ namespace Platform
 			handler(
 				innermostSignalContext->outSignalType,
 				innermostSignalContext->outSignalData,
-				innermostSignalContext->outCallStack
+				std::move(innermostSignalContext->outCallStack)
 				);
 		}
 
@@ -308,11 +308,12 @@ namespace Platform
 	struct PlatformException
 	{
 		void* data;
+		CallStack callStack;
 	};
 	
 	bool catchPlatformExceptions(
 		const std::function<void()>& thunk,
-		const std::function<void(void*)>& handler
+		const std::function<void(void*,CallStack&&)>& handler
 		)
 	{
 		try
@@ -322,14 +323,10 @@ namespace Platform
 		}
 		catch(PlatformException exception)
 		{
-			handler(exception.data);
+			handler(exception.data,std::move(exception.callStack));
+			if(exception.data) { delete [] (U8*)exception.data; }
 			return true;
 		}
-	}
-	
-	void* allocateExceptionData(Uptr numBytes)
-	{
-		return __cxa_allocate_exception(numBytes);
 	}
 	
 	std::type_info* getUserExceptionTypeInfo()
@@ -352,7 +349,7 @@ namespace Platform
 
 	[[noreturn]] void raisePlatformException(void* data)
 	{
-		throw PlatformException {data};
+		throw PlatformException {data,captureCallStack(1)};
 		Errors::unreachable();
 	}
 

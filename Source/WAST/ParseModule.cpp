@@ -190,10 +190,10 @@ static void parseImport(ModuleParseState& state)
 		}
 		case t_table:
 		{
-			const SizeConstraints sizeConstraints = parseSizeConstraints(state,UINT32_MAX);
+			const SizeConstraints sizeConstraints = parseSizeConstraints(state,IR::maxTableElems);
+			const bool isShared = parseOptionalSharedDeclaration(state);
 			const TableElementType elementType = TableElementType::anyfunc;
 			require(state,t_anyfunc);
-			const bool isShared = parseOptionalSharedDeclaration(state);
 			createImport(state,name,std::move(moduleName),std::move(exportName),
 				state.tableNameToIndexMap,state.module.tables,state.disassemblyNames.tables,
 				{elementType,isShared,sizeConstraints});
@@ -478,10 +478,10 @@ static void parseTable(ModuleParseState& state)
 		// Parse a table import.
 		[](ModuleParseState& state)
 		{
-			const SizeConstraints sizeConstraints = parseSizeConstraints(state,UINT32_MAX);
+			const SizeConstraints sizeConstraints = parseSizeConstraints(state,IR::maxTableElems);
+			const bool isShared = parseOptionalSharedDeclaration(state);
 			const TableElementType elementType = TableElementType::anyfunc;
 			require(state,t_anyfunc);
-			const bool isShared = parseOptionalSharedDeclaration(state);
 			return TableType {elementType,isShared,sizeConstraints};
 		},
 		// Parse a table definition.
@@ -489,7 +489,8 @@ static void parseTable(ModuleParseState& state)
 		{
 			// Parse the table type.
 			SizeConstraints sizeConstraints;
-			const bool hasSizeConstraints = tryParseSizeConstraints(state,UINT32_MAX,sizeConstraints);
+			const bool hasSizeConstraints = tryParseSizeConstraints(state,IR::maxTableElems,sizeConstraints);
+			const bool isShared = parseOptionalSharedDeclaration(state);
 		
 			const TableElementType elementType = TableElementType::anyfunc;
 			require(state,t_anyfunc);
@@ -508,7 +509,6 @@ static void parseTable(ModuleParseState& state)
 				});
 			}
 			
-			const bool isShared = parseOptionalSharedDeclaration(state);
 			return TableDef {TableType(elementType,isShared,sizeConstraints)};
 		});
 }

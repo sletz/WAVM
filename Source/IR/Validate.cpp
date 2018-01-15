@@ -43,7 +43,7 @@ namespace IR
 		}
 	}
 
-	void validate(SizeConstraints size,Uptr maxMax)
+	void validate(SizeConstraints size,U64 maxMax)
 	{
 		U64 max = size.max == UINT64_MAX ? maxMax : size.max;
 		VALIDATE_UNLESS("disjoint size bounds: ",size.min>max);
@@ -58,7 +58,7 @@ namespace IR
 	void validate(TableType type)
 	{
 		validate(type.elementType);
-		validate(type.size,UINT32_MAX);
+		validate(type.size,IR::maxTableElems);
 		if(ENABLE_THREADING_PROTOTYPE)
 		{
 			VALIDATE_UNLESS("shared tables must have a maximum size: ",type.isShared && type.size.max == UINT64_MAX);
@@ -638,7 +638,10 @@ namespace IR
 		for(auto& globalImport : module.globals.imports)
 		{
 			validate(globalImport.type);
-			VALIDATE_UNLESS("mutable globals cannot be imported: ",globalImport.type.isMutable);
+			if(!allowImportExportMutableGlobals)
+			{
+				VALIDATE_UNLESS("mutable globals cannot be imported: ",globalImport.type.isMutable);
+			}
 		}
 		
 		for(Uptr functionDefIndex = 0;functionDefIndex < module.functions.defs.size();++functionDefIndex)
@@ -675,7 +678,7 @@ namespace IR
 				VALIDATE_INDEX(exportIt.index,module.memories.size());
 				break;
 			case ObjectKind::global:
-				validateGlobalIndex(module,exportIt.index,false,true,false,"exported global index");
+				validateGlobalIndex(module,exportIt.index,false,!allowImportExportMutableGlobals,false,"exported global index");
 				break;
 			case ObjectKind::exceptionType:
 				VALIDATE_INDEX(exportIt.index,module.exceptionTypes.size());
