@@ -34,69 +34,95 @@
 using namespace IR;
 using namespace Runtime;
 
+//DEFINE_INTRINSIC_MODULE(env) : TODO
+
 // Tools for Module import
 
 struct RootResolver : Resolver
 {
-    std::map<std::string,Resolver*> moduleNameToResolverMap;
+    Compartment* compartment;
+    std::map<std::string,ModuleInstance*> moduleNameToInstanceMap;
     
-    bool resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,ObjectInstance*& outObject) override
+    RootResolver(Compartment* inCompartment): compartment(inCompartment)
     {
-        // Try to resolve an intrinsic first.
-        if(IntrinsicResolver::singleton.resolve(moduleName,exportName,type,outObject)) { return true; }
-        
-        // Then look for a named module.
-        auto namedResolverIt = moduleNameToResolverMap.find(moduleName);
-        if(namedResolverIt != moduleNameToResolverMap.end())
+        // Steph : 19/04/18 : TODO
+        //moduleNameToInstanceMap["env"] = Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(env));
+    }
+    
+    bool resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,Object*& outObject) override
+    {
+        auto namedInstanceIt = moduleNameToInstanceMap.find(moduleName);
+        if(namedInstanceIt != moduleNameToInstanceMap.end())
         {
-            return namedResolverIt->second->resolve(moduleName,exportName,type,outObject);
+            outObject = getInstanceExport(namedInstanceIt->second,exportName);
+            if(outObject)
+            {
+                if(isA(outObject,type)) { return true; }
+                else
+                {
+                    Log::printf(Log::Category::error,"Resolved import %s.%s to a %s, but was expecting %s",
+                                moduleName.c_str(),
+                                exportName.c_str(),
+                                asString(getObjectType(outObject)).c_str(),
+                                asString(type).c_str());
+                    return false;
+                }
+            }
         }
         
-        // Finally, stub in missing function imports.
-        if(type.kind == ObjectKind::function)
+        Log::printf(Log::Category::error,"Generated stub for missing import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
+        outObject = getStubObject(type);
+        return true;
+    }
+    
+    Object* getStubObject(ObjectType type) const
+    {
+        // If the import couldn't be resolved, stub it in.
+        switch(type.kind)
         {
-            // Generate a function body that just uses the unreachable op to fault if called.
-            Serialization::ArrayOutputStream codeStream;
-            OperatorEncoderStream encoder(codeStream);
-            encoder.unreachable();
-            encoder.end();
-            
-            // Generate a module for the stub function.
-            Module stubModule;
-            DisassemblyNames stubModuleNames;
-            stubModule.types.push_back(asFunctionType(type));
-            stubModule.functions.defs.push_back({{0},{},std::move(codeStream.getBytes()),{}});
-            stubModule.exports.push_back({"importStub",ObjectKind::function,0});
-            stubModuleNames.functions.push_back({std::string(moduleName) + "." + exportName,{}});
-            IR::setDisassemblyNames(stubModule,stubModuleNames);
-            IR::validateDefinitions(stubModule);
-            
-            // Instantiate the module and return the stub function instance.
-            auto stubModuleInstance = instantiateModule(stubModule,{});
-            outObject = getInstanceExport(stubModuleInstance,"importStub");
-            Log::printf(Log::Category::error,"Generated stub for missing function import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
-            return true;
-        }
-        else if(type.kind == ObjectKind::memory)
-        {
-            outObject = asObject(Runtime::createMemory(asMemoryType(type)));
-            Log::printf(Log::Category::error,"Generated stub for missing memory import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
-            return true;
-        }
-        else if(type.kind == ObjectKind::table)
-        {
-            outObject = asObject(Runtime::createTable(asTableType(type)));
-            Log::printf(Log::Category::error,"Generated stub for missing table import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
-            return true;
-        }
-        else if(type.kind == ObjectKind::global)
-        {
-            outObject = asObject(Runtime::createGlobal(asGlobalType(type),Runtime::Value(asGlobalType(type).valueType,Runtime::UntaggedValue())));
-            Log::printf(Log::Category::error,"Generated stub for missing global import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
-            return true;
-        }
-        
-        return false;
+            case IR::ObjectKind::function:
+            {
+                // Generate a function body that just uses the unreachable op to fault if called.
+                Serialization::ArrayOutputStream codeStream;
+                OperatorEncoderStream encoder(codeStream);
+                encoder.unreachable();
+                encoder.end();
+                
+                // Generate a module for the stub function.
+                Module stubModule;
+                DisassemblyNames stubModuleNames;
+                stubModule.types.push_back(asFunctionType(type));
+                stubModule.functions.defs.push_back({{0},{},std::move(codeStream.getBytes()),{}});
+                stubModule.exports.push_back({"importStub",IR::ObjectKind::function,0});
+                stubModuleNames.functions.push_back({"importStub <" + asString(type) + ">",{},{}});
+                IR::setDisassemblyNames(stubModule,stubModuleNames);
+                IR::validateDefinitions(stubModule);
+                
+                // Instantiate the module and return the stub function instance.
+                auto stubModuleInstance = instantiateModule(compartment,stubModule,{});
+                return getInstanceExport(stubModuleInstance,"importStub");
+            }
+            case IR::ObjectKind::memory:
+            {
+                return asObject(Runtime::createMemory(compartment,asMemoryType(type)));
+            }
+            case IR::ObjectKind::table:
+            {
+                return asObject(Runtime::createTable(compartment,asTableType(type)));
+            }
+            case IR::ObjectKind::global:
+            {
+                return asObject(Runtime::createGlobal(
+                                                      compartment,
+                                                      asGlobalType(type),
+                                                      Runtime::Value(asGlobalType(type).valueType,Runtime::UntaggedValue())));
+            }
+            case IR::ObjectKind::exceptionType:
+            {
+                return asObject(Runtime::createExceptionTypeInstance(asExceptionTypeType(type)));
+            }
+            default: Errors::unreachable();
+        };
     }
 };
 
@@ -118,7 +144,10 @@ bool emcc_dsp::init(const char* filename)
 
 emcc_dsp::emcc_dsp(Module* module, const string& name)
 {
-    RootResolver rootResolver;
+    compartment = Runtime::createCompartment();
+    context = Runtime::createContext(compartment);
+    RootResolver rootResolver(compartment);
+    
     LinkResult linkResult = linkModule(*module, rootResolver);
     
     if(!linkResult.success)
@@ -133,8 +162,10 @@ emcc_dsp::emcc_dsp(Module* module, const string& name)
         throw std::bad_alloc();
     }
     
-    fModuleInstance = instantiateModule(*module, std::move(linkResult.resolvedImports));
-    Emscripten::initInstance(*module,fModuleInstance);
+    fModuleInstance = instantiateModule(compartment, *module, std::move(linkResult.resolvedImports));
+    
+    // Steph : 19/04/18
+    //Emscripten::initInstance(*module,fModuleInstance);
     
     if (!fModuleInstance) {
         std::cerr << "Failed to instantiateModule" << std::endl;
@@ -165,7 +196,7 @@ emcc_dsp::emcc_dsp(Module* module, const string& name)
     std::cerr << "instantiateModule" << std::endl;
     
     std::vector<Value> invokeArgs;
-    auto functionResult = invokeFunction(fNew, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context, fNew, invokeArgs);
     fDSP = functionResult.i32;
     
     std::cerr << "fDSP " << fDSP << std::endl;
@@ -234,7 +265,7 @@ emcc_dsp::~emcc_dsp()
     
     std::vector<Value> invokeArgs;
     Value dsp_arg(fDSP);
-    invokeFunction(fDelete, invokeArgs);
+    invokeFunctionChecked(context,fDelete, invokeArgs);
 }
 
 int emcc_dsp::getNumInputs()
@@ -242,7 +273,7 @@ int emcc_dsp::getNumInputs()
     std::vector<Value> invokeArgs;
     Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
-    auto functionResult = invokeFunction(fGetNumInputs, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context,fGetNumInputs, invokeArgs);
     return functionResult.i32;
 }
         
@@ -251,7 +282,7 @@ int emcc_dsp::getNumOutputs()
     std::vector<Value> invokeArgs;
     Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
-    auto functionResult = invokeFunction(fGetNumOutputs, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context,fGetNumOutputs, invokeArgs);
     return functionResult.i32;
 }
 
@@ -265,7 +296,7 @@ int emcc_dsp::getSampleRate()
     std::vector<Value> invokeArgs;
     Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
-    auto functionResult = invokeFunction(fGetSampleRate, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context,fGetSampleRate, invokeArgs);
     return functionResult.i32;
 }
 
@@ -276,7 +307,7 @@ void emcc_dsp::init(int samplingRate)
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
-    invokeFunction(fInit, invokeArgs);
+    invokeFunctionChecked(context,fInit, invokeArgs);
 }
 
 void emcc_dsp::instanceInit(int samplingRate)
@@ -286,7 +317,7 @@ void emcc_dsp::instanceInit(int samplingRate)
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
-    invokeFunction(fInstanceInit, invokeArgs);
+    invokeFunctionChecked(context,fInstanceInit, invokeArgs);
 }
 
 void emcc_dsp::instanceConstants(int samplingRate)
@@ -296,7 +327,7 @@ void emcc_dsp::instanceConstants(int samplingRate)
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
-    invokeFunction(fInstanceConstants, invokeArgs);
+    invokeFunctionChecked(context,fInstanceConstants, invokeArgs);
 }
 
 void emcc_dsp::instanceResetUserInterface()
@@ -304,7 +335,7 @@ void emcc_dsp::instanceResetUserInterface()
     std::vector<Value> invokeArgs;
     Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
-    invokeFunction(fInstanceResetUI, invokeArgs);
+    invokeFunctionChecked(context,fInstanceResetUI, invokeArgs);
 }
 
 void emcc_dsp::instanceClear()
@@ -312,7 +343,7 @@ void emcc_dsp::instanceClear()
     std::vector<Value> invokeArgs;
     Value dsp_arg(fDSP);
     invokeArgs.push_back(dsp_arg);
-    invokeFunction(fInstanceClear, invokeArgs);
+    invokeFunctionChecked(context,fInstanceClear, invokeArgs);
 }
 
 emcc_dsp* emcc_dsp::clone()

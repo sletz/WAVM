@@ -160,11 +160,12 @@ int mainBody(const char* filename_aux, int argc, char** args)
     return EXIT_SUCCESS;
 }
 
-int commandMain(int argc,char** argv)
+int commandMain(int argc, char** argv)
 {
     const char* filename = argv[argc-1];
   
-    Runtime::init();
+    // Steph : 19/04/18
+    //Runtime::init();
 
     int returnCode = EXIT_FAILURE;
     #ifdef __AFL_LOOP
@@ -180,30 +181,24 @@ int commandMain(int argc,char** argv)
 
 int main(int argc,char** argv)
 {
-    int result = 0;
-    try
-    {
-        Runtime::catchRuntimeExceptions(
-                                        [&]
-                                        {
-                                            result = commandMain(argc,argv);
-                                        },
-                                        [&](Runtime::Exception&& exception)
-                                        {
-                                            std::cerr << "Runtime exception: " << describeException(exception) << std::endl;
-                                            result = EXIT_FAILURE;
-                                        });
+    if(argc != 2) {
+        std::cerr <<  "Usage: Test in.wast" << std::endl;
+        return EXIT_FAILURE;
     }
-    catch(IR::ValidationException exception)
-    {
-        std::cerr << "Failed to validate module: " << exception.message << std::endl;
-        result = EXIT_FAILURE;
-    }
-    catch(Serialization::FatalSerializationException exception)
-    {
-        std::cerr << "Fatal serialization exception: " << exception.message << std::endl;
-        result = EXIT_FAILURE;
-    }
+
+    // Treat any unhandled exception (e.g. in a thread) as a fatal error.
+    Runtime::setUnhandledExceptionHandler([](Runtime::Exception&& exception)
+                                          {
+                                              Errors::fatalf("Unhandled runtime exception: %s\n",describeException(exception).c_str());
+                                          });
     
-    return result;
+    // Always enable debug logging for tests.
+    Log::setCategoryEnabled(Log::Category::debug,true);
+    
+    int exitCode = commandMain(argc,argv);
+    
+    Runtime::collectGarbage();
+    
+    return exitCode;
 }
+

@@ -77,7 +77,8 @@ int commandMain(int argc,char** argv)
 {
     const char* filename = argv[argc-1];
   
-    Runtime::init();
+    // Steph : 19/04/18
+    //Runtime::init();
 
     int returnCode = EXIT_FAILURE;
     #ifdef __AFL_LOOP

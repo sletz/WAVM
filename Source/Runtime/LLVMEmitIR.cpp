@@ -151,8 +151,7 @@ namespace LLVMJIT
 		, functionType(inModule.types[inFunctionDef.type.index])
 		, functionInstance(inFunctionInstance)
 		, llvmFunction(inLLVMFunction)
-		, irBuilder(context)
-        , localEscapeBlock(nullptr)
+	   , localEscapeBlock(nullptr)
         {
         #ifdef OPTIMIZE2
             // SL : fast-math a IR level

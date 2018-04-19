@@ -57,6 +57,10 @@ class wasm_dsp : public dsp {
     
         ModuleInstance* fModuleInstance;
     
+        // Link the module with the intrinsic modules.
+        Compartment* compartment;
+        Context* context;
+    
         FunctionInstance* fGetNumInputs;
         FunctionInstance* fGetNumOutputs;
         FunctionInstance* fInit;
@@ -80,7 +84,7 @@ class wasm_dsp : public dsp {
             Value index_arg = index;
             invokeArgs.push_back(dsp_arg);
             invokeArgs.push_back(index_arg);
-            auto functionResult = invokeFunction(fGetParamValue, invokeArgs);
+            auto functionResult = invokeFunctionChecked(context, fGetParamValue, invokeArgs);
             return (sizeof(FAUSTFLOAT) == 4) ? functionResult.f32 : functionResult.f64;
         }
         
@@ -93,7 +97,7 @@ class wasm_dsp : public dsp {
             invokeArgs.push_back(dsp_arg);
             invokeArgs.push_back(index_arg);
             invokeArgs.push_back(value_arg);
-            invokeFunction(fSetParamValue, invokeArgs);
+            invokeFunctionChecked(context,fSetParamValue, invokeArgs);
         }
     
         void computeAux(int count)
@@ -108,7 +112,7 @@ class wasm_dsp : public dsp {
             invokeArgs.push_back(count_arg);
             invokeArgs.push_back(ins_arg);
             invokeArgs.push_back(outs_arg);
-            invokeFunction(fCompute, invokeArgs);
+            invokeFunctionChecked(context,fCompute, invokeArgs);
         }
     
         std::string getJSON(U8* base_ptr)

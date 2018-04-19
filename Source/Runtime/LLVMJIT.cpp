@@ -4,6 +4,8 @@
 #include "Logging/Logging.h"
 #include "RuntimePrivate.h"
 
+#include "llvm/ExecutionEngine/JITEventListener.h"
+
 #ifdef _DEBUG
 	// This needs to be 1 to allow debuggers such as Visual Studio to place breakpoints and step through the JITed code.
 	#define USE_WRITEABLE_JIT_CODE_PAGES 1
@@ -926,15 +928,15 @@ namespace LLVMJIT
 			#endif
 			);
 
-		llvmI8Type = llvm::Type::getInt8Ty(context);
-		llvmI16Type = llvm::Type::getInt16Ty(context);
-		llvmI32Type = llvm::Type::getInt32Ty(context);
-		llvmI64Type = llvm::Type::getInt64Ty(context);
-		llvmF32Type = llvm::Type::getFloatTy(context);
-		llvmF64Type = llvm::Type::getDoubleTy(context);
-		llvmVoidType = llvm::Type::getVoidTy(context);
-		llvmBoolType = llvm::Type::getInt1Ty(context);
-		llvmI8PtrType = llvmI8Type->getPointerTo();
+        llvmI8Type = llvm::Type::getInt8Ty(*llvmContext);
+        llvmI16Type = llvm::Type::getInt16Ty(*llvmContext);
+        llvmI32Type = llvm::Type::getInt32Ty(*llvmContext);
+        llvmI64Type = llvm::Type::getInt64Ty(*llvmContext);
+        llvmF32Type = llvm::Type::getFloatTy(*llvmContext);
+        llvmF64Type = llvm::Type::getDoubleTy(*llvmContext);
+        llvmVoidType = llvm::Type::getVoidTy(*llvmContext);
+        llvmBoolType = llvm::Type::getInt1Ty(*llvmContext);
+        llvmI8PtrType = llvmI8Type->getPointerTo();
 		
 		#if defined(_WIN64)
 		auto llvmExceptionRecordStructType = llvm::StructType::create({

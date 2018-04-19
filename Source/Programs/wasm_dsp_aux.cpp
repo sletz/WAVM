@@ -35,6 +35,97 @@
 using namespace IR;
 using namespace Runtime;
 
+DEFINE_INTRINSIC_MODULE(env)
+
+struct RootResolver : Resolver
+{
+    Compartment* compartment;
+    std::map<std::string,ModuleInstance*> moduleNameToInstanceMap;
+    
+    RootResolver(Compartment* inCompartment): compartment(inCompartment)
+    {
+        // Steph : 19/04/18
+        moduleNameToInstanceMap["env"] = Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(env));
+    }
+    
+    bool resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,Object*& outObject) override
+    {
+        auto namedInstanceIt = moduleNameToInstanceMap.find(moduleName);
+        if(namedInstanceIt != moduleNameToInstanceMap.end())
+        {
+            outObject = getInstanceExport(namedInstanceIt->second,exportName);
+            if(outObject)
+            {
+                if(isA(outObject,type)) { return true; }
+                else
+                {
+                    Log::printf(Log::Category::error,"Resolved import %s.%s to a %s, but was expecting %s",
+                                moduleName.c_str(),
+                                exportName.c_str(),
+                                asString(getObjectType(outObject)).c_str(),
+                                asString(type).c_str());
+                    return false;
+                }
+            }
+        }
+        
+        Log::printf(Log::Category::error,"Generated stub for missing import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
+        outObject = getStubObject(type);
+        return true;
+    }
+    
+    Object* getStubObject(ObjectType type) const
+    {
+        // If the import couldn't be resolved, stub it in.
+        switch(type.kind)
+        {
+            case IR::ObjectKind::function:
+            {
+                // Generate a function body that just uses the unreachable op to fault if called.
+                Serialization::ArrayOutputStream codeStream;
+                OperatorEncoderStream encoder(codeStream);
+                encoder.unreachable();
+                encoder.end();
+                
+                // Generate a module for the stub function.
+                Module stubModule;
+                DisassemblyNames stubModuleNames;
+                stubModule.types.push_back(asFunctionType(type));
+                stubModule.functions.defs.push_back({{0},{},std::move(codeStream.getBytes()),{}});
+                stubModule.exports.push_back({"importStub",IR::ObjectKind::function,0});
+                stubModuleNames.functions.push_back({"importStub <" + asString(type) + ">",{},{}});
+                IR::setDisassemblyNames(stubModule,stubModuleNames);
+                IR::validateDefinitions(stubModule);
+                
+                // Instantiate the module and return the stub function instance.
+                auto stubModuleInstance = instantiateModule(compartment,stubModule,{});
+                return getInstanceExport(stubModuleInstance,"importStub");
+            }
+            case IR::ObjectKind::memory:
+            {
+                return asObject(Runtime::createMemory(compartment,asMemoryType(type)));
+            }
+            case IR::ObjectKind::table:
+            {
+                return asObject(Runtime::createTable(compartment,asTableType(type)));
+            }
+            case IR::ObjectKind::global:
+            {
+                return asObject(Runtime::createGlobal(
+                                                      compartment,
+                                                      asGlobalType(type),
+                                                      Runtime::Value(asGlobalType(type).valueType,Runtime::UntaggedValue())));
+            }
+            case IR::ObjectKind::exceptionType:
+            {
+                return asObject(Runtime::createExceptionTypeInstance(asExceptionTypeType(type)));
+            }
+            default: Errors::unreachable();
+        };
+    }
+};
+
+
 // Module imported mathematical functions
 
 /*
@@ -74,15 +165,18 @@ DEFINE_INTRINSIC_FUNCTION1(env,sin,sin,f64,f64,value) { return std::sin(value); 
 DEFINE_INTRINSIC_FUNCTION1(env,tan,tan,f64,f64,value) { return std::tan(value); }
 */
 
+/*
 DEFINE_INTRINSIC_FUNCTION3(env,_memset,_memset,i32,i32,v1,i32,v2,i32,v3)
 {
     //return reinterpret_cast<int>(memset(reinterpret_cast<void *>(v1),static_cast<int>(v2),static_cast<size_t>(v3)));
     return 0;
 }
+*/
 
 // Integer version
 
 // Float (= f32) version
+/*
 DEFINE_INTRINSIC_FUNCTION1(env,_acosf,_acosf,f32,f32,value) { return std::acos(value); }
 DEFINE_INTRINSIC_FUNCTION1(env,_asinf,_asinf,f32,f32,value) { return std::asin(value); }
 DEFINE_INTRINSIC_FUNCTION1(env,_atanf,_atanf,f32,f32,value) { return std::atan(value); }
@@ -113,9 +207,48 @@ DEFINE_INTRINSIC_FUNCTION2(env,_remainder,_remainder,f64,f64,left,f64,right) { r
 DEFINE_INTRINSIC_FUNCTION1(env,_round,_round,f64,f64,value) { return std::round(value); }
 DEFINE_INTRINSIC_FUNCTION1(env,_sin,_sin,f64,f64,value) { return std::sin(value); }
 DEFINE_INTRINSIC_FUNCTION1(env,_tan,_tan,f64,f64,value) { return std::tan(value); }
+*/
+
+// Integer version
+
+DEFINE_INTRINSIC_FUNCTION(env,"_abs",I32,_abs,I32 value) { return std::abs(value); }
+
+//Float (= f32) version
+
+DEFINE_INTRINSIC_FUNCTION(env,"_acosf",F32,_acosf,F32 value) { return std::acos(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_asinf",F32,_asinf,F32 value) { return std::asin(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_atanf",F32,_atanf,F32 value) { return std::atan(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_atan2f",F32,_atan2f,F32 left,F32 right) { return std::atan2(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_cosf",F32,_cosf,F32 value) { return std::cos(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_expf",F32,_expf,F32 value) { return std::exp(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_fmodf",F32,_fmodf,F32 left,F32 right) { return std::fmod(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_logf",F32,_logf,F32 value) { return std::log(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_log10f",F32,_log10f,F32 value) { return std::log10(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_powf",F32,_powf,F32 left,F32 right) { return std::pow(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_remainderf",F32,_remainderf,F32 left,F32 right) { return std::remainder(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_roundf",F32,_roundf,F32 value) { return std::round(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_sinf",F32,_sinf,F32 value) { return std::sin(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_tanf",F32,_tanf,F32 value) { return std::tan(value); }
+
+// Double (= f64) version
+DEFINE_INTRINSIC_FUNCTION(env,"_acos",F64,_acos,F64 value) { return std::acos(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_asin",F64,_asin,F64 value) { return std::asin(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_atan",F64,_atan,F64 value) { return std::atan(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_atan2",F64,_atan2,F64 left,F64 right) { return std::atan2(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_cos",F64,_cos,F64 value) { return std::cos(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_exp",F64,_exp,F64 value) { return std::exp(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_fmod",F64,_fmod,F64 left,F64 right) { return std::fmod(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_log",F64,_log,F64 value) { return std::log(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_log10",F64,_log10,F64 value) { return std::log10(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_pow",F64,_pow,F64 left,F64 right) { return std::pow(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_remainder",F64,_remainder,F64 left,F64 right) { return std::remainder(left,right); }
+DEFINE_INTRINSIC_FUNCTION(env,"_round",F64,_round,F64 value) { return std::round(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_sin",F64,_sin,F64 value) { return std::sin(value); }
+DEFINE_INTRINSIC_FUNCTION(env,"_tan",F64,_tan,F64 value) { return std::tan(value); }
 
 // Tools for Module import
 
+/*
 struct RootResolver : Resolver
 {
     std::map<std::string,Resolver*> moduleNameToResolverMap;
@@ -179,6 +312,7 @@ struct RootResolver : Resolver
         return false;
     }
 };
+ */
 
 // Public DSP API
 
@@ -198,7 +332,10 @@ bool wasm_dsp::init(const char* filename)
 
 wasm_dsp::wasm_dsp(Module* module)
 {
-    RootResolver rootResolver;
+    compartment = Runtime::createCompartment();
+    context = Runtime::createContext(compartment);
+    RootResolver rootResolver(compartment);
+    
     LinkResult linkResult = linkModule(*module, rootResolver);
     
     if(!linkResult.success)
@@ -213,7 +350,7 @@ wasm_dsp::wasm_dsp(Module* module)
         throw std::bad_alloc();
     }
     
-    fModuleInstance = instantiateModule(*module, std::move(linkResult.resolvedImports));
+    fModuleInstance = instantiateModule(compartment, *module, std::move(linkResult.resolvedImports));
     if (!fModuleInstance) {
         std::cerr << "Failed to instantiateModule" << std::endl;
         throw std::bad_alloc();
@@ -302,7 +439,7 @@ int wasm_dsp::getNumInputs()
     std::vector<Value> invokeArgs;
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
-    auto functionResult = invokeFunction(fGetNumInputs, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context,fGetNumInputs, invokeArgs);
     return functionResult.i32;
 }
         
@@ -311,7 +448,7 @@ int wasm_dsp::getNumOutputs()
     std::vector<Value> invokeArgs;
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
-    auto functionResult = invokeFunction(fGetNumOutputs, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context,fGetNumOutputs, invokeArgs);
     return functionResult.i32;
 }
 
@@ -325,18 +462,22 @@ int wasm_dsp::getSampleRate()
     std::vector<Value> invokeArgs;
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
-    auto functionResult = invokeFunction(fGetSampleRate, invokeArgs);
+    auto functionResult = invokeFunctionChecked(context,fGetSampleRate, invokeArgs);
     return functionResult.i32;
 }
 
 void wasm_dsp::init(int samplingRate)
 {
+    std::cerr << "wasm_dsp::init" << std::endl;
+    
     std::vector<Value> invokeArgs;
     Value dsp_arg = DSP_BASE;
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
-    invokeFunction(fInit, invokeArgs);
+    invokeFunctionChecked(context,fInit, invokeArgs);
+    
+    std::cerr << "wasm_dsp::init OK" << std::endl;
 }
 
 void wasm_dsp::instanceInit(int samplingRate)
@@ -346,7 +487,7 @@ void wasm_dsp::instanceInit(int samplingRate)
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
-    invokeFunction(fInstanceInit, invokeArgs);
+    invokeFunctionChecked(context,fInstanceInit, invokeArgs);
 }
 
 void wasm_dsp::instanceConstants(int samplingRate)
@@ -356,7 +497,7 @@ void wasm_dsp::instanceConstants(int samplingRate)
     Value samplingRate_arg = samplingRate;
     invokeArgs.push_back(dsp_arg);
     invokeArgs.push_back(samplingRate_arg);
-    invokeFunction(fInstanceConstants, invokeArgs);
+    invokeFunctionChecked(context,fInstanceConstants, invokeArgs);
 }
 
 void wasm_dsp::instanceResetUserInterface()
@@ -364,7 +505,7 @@ void wasm_dsp::instanceResetUserInterface()
     std::vector<Value> invokeArgs;
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
-    invokeFunction(fInstanceResetUI, invokeArgs);
+    invokeFunctionChecked(context,fInstanceResetUI, invokeArgs);
 }
 
 void wasm_dsp::instanceClear()
@@ -372,7 +513,7 @@ void wasm_dsp::instanceClear()
     std::vector<Value> invokeArgs;
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
-    invokeFunction(fInstanceClear, invokeArgs);
+    invokeFunctionChecked(context,fInstanceClear, invokeArgs);
 }
 
 wasm_dsp* wasm_dsp::clone()

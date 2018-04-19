@@ -31,6 +31,8 @@ int main(int argc,char** argv)
 	return EXIT_SUCCESS;
 }
 
+// Steph : 19/04/18
+/*
 int main(int argc,char** argv)
 {
     int result = 0;
@@ -60,3 +62,4 @@ int main(int argc,char** argv)
     
     return result;
 }
+*/
