@@ -7,6 +7,8 @@
 #include <math.h>
 #include <cmath>
 
+//#define OPTIMIZE3
+
 namespace Runtime
 {
 	DEFINE_INTRINSIC_MODULE(wavmIntrinsics)

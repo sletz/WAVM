@@ -10,6 +10,9 @@
 
 using namespace IR;
 
+//#define OPTIMIZE1
+//#define OPTIMIZE2
+
 namespace LLVMJIT
 {
 	// The LLVM IR for a module.
@@ -156,7 +159,7 @@ namespace LLVMJIT
         #ifdef OPTIMIZE2
             // SL : fast-math a IR level
             llvm::FastMathFlags FMF;
-            FMF.setUnsafeAlgebra();
+            FMF.setFast();
             irBuilder.setFastMathFlags(FMF);
         #endif
         }

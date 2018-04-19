@@ -6,6 +6,8 @@
 
 #include "llvm/ExecutionEngine/JITEventListener.h"
 
+//#define OPTIMIZE2
+
 #ifdef _DEBUG
 	// This needs to be 1 to allow debuggers such as Visual Studio to place breakpoints and step through the JITed code.
 	#define USE_WRITEABLE_JIT_CODE_PAGES 1
