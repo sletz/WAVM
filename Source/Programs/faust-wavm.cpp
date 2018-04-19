@@ -163,18 +163,13 @@ int mainBody(const char* filename_aux, int argc, char** args)
 int commandMain(int argc, char** argv)
 {
     const char* filename = argv[argc-1];
-  
-    // Steph : 19/04/18
-    //Runtime::init();
-
+ 
     int returnCode = EXIT_FAILURE;
     #ifdef __AFL_LOOP
     while(__AFL_LOOP(2000))
     #endif
     {
         returnCode = mainBody(filename, argc, argv);
-        //std::cout << "freeUnreferencedObjects " << std::endl;
-        //Runtime::freeUnreferencedObjects({});
     }
     return returnCode;
 }
@@ -196,7 +191,6 @@ int main(int argc,char** argv)
     Log::setCategoryEnabled(Log::Category::debug,true);
     
     int exitCode = commandMain(argc,argv);
-    
     Runtime::collectGarbage();
     
     return exitCode;

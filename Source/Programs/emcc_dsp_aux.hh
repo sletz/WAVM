@@ -45,7 +45,7 @@ class emcc_dsp : public dsp {
         int fWasmOutputs;       // Index in wasm memory
     
         //FAUSTFLOAT** fInputs;   // Wasm memory mapped to pointers
-         //FAUSTFLOAT** fOutputs;  // Wasm memory mapped to pointers
+        //FAUSTFLOAT** fOutputs;  // Wasm memory mapped to pointers
     
         ModuleInstance* fModuleInstance;
     
