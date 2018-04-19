@@ -91,7 +91,7 @@ int mainBody(const char* filename_aux, int argc, char** args)
     
     if (nvoices > 0) {
         cout << "Starting polyphonic mode nvoices : " << nvoices << endl;
-        DSP = dsp_poly = new mydsp_poly(DSP, nvoices, true, false);
+        DSP = dsp_poly = new mydsp_poly(DSP, nvoices, false, false);
     }
 
     // Create GUI
