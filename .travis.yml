@@ -6,14 +6,16 @@ compiler:
  - gcc
 
 install:
- - if [ "$CXX" = "g++" ]; then export CXX="g++-5" CC="gcc-5"; fi
- - if [ "$CXX" = "clang++" ] && [ "$TRAVIS_OS_NAME" != "osx" ]; then export CXX="clang++-3.8" CC="clang-3.8"; fi
+ - if [ "$CXX" = "g++" ]; then export CXX="g++-7" CC="gcc-7"; fi
+ - if [ "$CXX" = "clang++" ] && [ "$TRAVIS_OS_NAME" != "osx" ]; then export CXX="clang++-5.0" CC="clang-5.0"; fi
 
 script: ./travis-build.sh
 
 os:
  - linux
-# - osx
+ - osx
+ 
+osx_image: xcode9.3beta
 
 matrix:
   exclude:
@@ -23,10 +25,10 @@ matrix:
 addons:
  apt:
   sources:
-   - llvm-toolchain-precise-3.8
+   - llvm-toolchain-trusty-5.0
    - ubuntu-toolchain-r-test
   packages:
-   - gcc-5
-   - g++-5
+   - gcc-7
+   - g++-7
    - libedit-dev
-   - clang-3.8
+   - clang-5.0

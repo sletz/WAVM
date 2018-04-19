@@ -1,6 +1,6 @@
 #include "Inline/BasicTypes.h"
 #include "Inline/Serialization.h"
-#include "Inline/UTF8.h"
+#include "Inline/Unicode.h"
 #include "WASM.h"
 #include "IR/Module.h"
 #include "IR/Operators.h"
@@ -12,7 +12,7 @@ using namespace Serialization;
 static void throwIfNotValidUTF8(const std::string& string)
 {
 	const U8* endChar = (const U8*)string.data() + string.size();
-	if(UTF8::validateString((const U8*)string.data(),endChar) != endChar)
+	if(Unicode::validateUTF8String((const U8*)string.data(),endChar) != endChar)
 	{
 		throw FatalSerializationException("invalid UTF-8 encoding");
 	}
@@ -73,13 +73,9 @@ namespace IR
 		
 		Uptr flags = 0;
 		if(!Stream::isInput && tableType.size.max != UINT64_MAX) { flags |= 0x01; }
-		#if ENABLE_THREADING_PROTOTYPE
 		if(!Stream::isInput && tableType.isShared) { flags |= 0x02; }
 		serializeVarUInt32(stream,flags);
 		if(Stream::isInput) { tableType.isShared = (flags & 0x02) != 0; }
-		#else
-		serializeVarUInt32(stream,flags);
-		#endif
 		serialize(stream,tableType.size,flags & 0x01);
 	}
 
@@ -88,13 +84,9 @@ namespace IR
 	{
 		Uptr flags = 0;
 		if(!Stream::isInput && memoryType.size.max != UINT64_MAX) { flags |= 0x01; }
-		#if ENABLE_THREADING_PROTOTYPE
 		if(!Stream::isInput && memoryType.isShared) { flags |= 0x02; }
 		serializeVarUInt32(stream,flags);
 		if(Stream::isInput) { memoryType.isShared = (flags & 0x02) != 0; }
-		#else
-		serializeVarUInt32(stream,flags);
-		#endif
 		serialize(stream,memoryType.size,flags & 0x01);
 	}
 
@@ -283,9 +275,7 @@ namespace WASM
 	void serialize(Stream& stream,CallIndirectImm& imm,const FunctionDef&)
 	{
 		serializeVarUInt32(stream,imm.type.index);
-
-		U8 reserved = 0;
-		serializeVarUInt1(stream,reserved);
+		serializeConstant(stream,"call_indirect immediate reserved field must be 0",U8(0));
 	}
 
 	template<typename Stream,Uptr naturalAlignmentLog2>
@@ -297,8 +287,7 @@ namespace WASM
 	template<typename Stream>
 	void serialize(Stream& stream,MemoryImm& imm,const FunctionDef&)
 	{
-		U8 reserved = 0;
-		serializeVarUInt1(stream,reserved);
+		serializeConstant(stream,"grow_memory/current_memory immediate reserved field must be 0",U8(0));
 	}
 
 	template<typename Stream>
@@ -307,51 +296,45 @@ namespace WASM
 		serializeNativeValue(stream,v128);
 	}
 
-	#if ENABLE_SIMD_PROTOTYPE
-		template<typename Stream,Uptr numLanes>
-		void serialize(Stream& stream,LaneIndexImm<numLanes>& imm,const FunctionDef&)
-		{
-			serializeVarUInt7(stream,imm.laneIndex);
-		}
-		template<typename Stream,Uptr numLanes>
-		void serialize(Stream& stream,ShuffleImm<numLanes>& imm,const FunctionDef&)
-		{
-			for(Uptr laneIndex = 0;laneIndex < numLanes;++laneIndex)
-			{
-				serializeVarUInt7(stream,imm.laneIndices[laneIndex]);
-			}
-		}
-	#endif
+	template<typename Stream,Uptr numLanes>
+	void serialize(Stream& stream,LaneIndexImm<numLanes>& imm,const FunctionDef&)
+	{
+		serializeVarUInt7(stream,imm.laneIndex);
+	}
 
-	#if ENABLE_THREADING_PROTOTYPE
-		template<typename Stream>
-		void serialize(Stream& stream,LaunchThreadImm& imm,const FunctionDef&) {}
-		
-		template<typename Stream,Uptr naturalAlignmentLog2>
-		void serialize(Stream& stream,AtomicLoadOrStoreImm<naturalAlignmentLog2>& imm,const FunctionDef&)
+	template<typename Stream,Uptr numLanes>
+	void serialize(Stream& stream,ShuffleImm<numLanes>& imm,const FunctionDef&)
+	{
+		for(Uptr laneIndex = 0;laneIndex < numLanes;++laneIndex)
 		{
-			serializeVarUInt7(stream,imm.alignmentLog2);
-			serializeVarUInt32(stream,imm.offset);
+			serializeVarUInt7(stream,imm.laneIndices[laneIndex]);
 		}
-	#endif
+	}
 
-	#if ENABLE_EXCEPTION_PROTOTYPE
-		template<typename Stream>
-		void serialize(Stream& stream,CatchImm& imm,const FunctionDef&)
-		{
-			serializeVarUInt32(stream,imm.exceptionTypeIndex);
-		}
-		template<typename Stream>
-		void serialize(Stream& stream,ThrowImm& imm,const FunctionDef&)
-		{
-			serializeVarUInt32(stream,imm.exceptionTypeIndex);
-		}
-		template<typename Stream>
-		void serialize(Stream& stream,RethrowImm& imm,const FunctionDef&)
-		{
-			serializeVarUInt32(stream,imm.catchDepth);
-		}
-	#endif
+	template<typename Stream,Uptr naturalAlignmentLog2>
+	void serialize(Stream& stream,AtomicLoadOrStoreImm<naturalAlignmentLog2>& imm,const FunctionDef&)
+	{
+		serializeVarUInt7(stream,imm.alignmentLog2);
+		serializeVarUInt32(stream,imm.offset);
+	}
+
+	template<typename Stream>
+	void serialize(Stream& stream,CatchImm& imm,const FunctionDef&)
+	{
+		serializeVarUInt32(stream,imm.exceptionTypeIndex);
+	}
+
+	template<typename Stream>
+	void serialize(Stream& stream,ThrowImm& imm,const FunctionDef&)
+	{
+		serializeVarUInt32(stream,imm.exceptionTypeIndex);
+	}
+
+	template<typename Stream>
+	void serialize(Stream& stream,RethrowImm& imm,const FunctionDef&)
+	{
+		serializeVarUInt32(stream,imm.catchDepth);
+	}
 
 	template<typename Stream,typename Value>
 	void serialize(Stream& stream,LiteralImm<Value>& imm,const FunctionDef&)

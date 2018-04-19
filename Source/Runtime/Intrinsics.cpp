@@ -1,6 +1,5 @@
 #include "Inline/BasicTypes.h"
 #include "Intrinsics.h"
-#include "Platform/Platform.h"
 #include "Runtime.h"
 #include "RuntimePrivate.h"
 
@@ -8,168 +7,148 @@
 
 namespace Intrinsics
 {
-	struct Singleton
+	struct ModuleImpl
 	{
 		std::map<std::string,Intrinsics::Function*> functionMap;
-		std::map<std::string,Intrinsics::Global*> variableMap;
+		std::map<std::string,Intrinsics::Global*> globalMap;
 		std::map<std::string,Intrinsics::Memory*> memoryMap;
 		std::map<std::string,Intrinsics::Table*> tableMap;
-		Platform::Mutex* mutex;
-
-		Singleton(): mutex(Platform::createMutex()) {}
-		Singleton(const Singleton&) = delete;
-
-		static Singleton& get()
-		{
-			static Singleton result;
-			return result;
-		}
 	};
+
+	Module::~Module()
+	{
+		if(impl)
+		{
+			delete impl;
+		}
+	}
+
+	static void initializeModule(Intrinsics::Module& moduleRef)
+	{
+		if(!moduleRef.impl) { moduleRef.impl = new Intrinsics::ModuleImpl; }
+	}
+
+	Function::Function(
+		Intrinsics::Module& moduleRef,
+		const char* inName,
+		void* inNativeFunction,
+		const IR::FunctionType* inType,
+		Runtime::CallingConvention inCallingConvention)
+	: name(inName)
+	, type(inType)
+	, nativeFunction(inNativeFunction)
+	, callingConvention(inCallingConvention)
+	{
+		initializeModule(moduleRef);
+
+		if(moduleRef.impl->functionMap.count(name))
+		{
+			Errors::fatalf("Intrinsic function already registered: %s",name);
+		}
+		moduleRef.impl->functionMap[name] = this;
+	}
+
+	Runtime::FunctionInstance* Function::instantiate(Runtime::Compartment* compartment)
+	{
+		return new Runtime::FunctionInstance(
+			nullptr,
+			IR::FunctionType::get(type->ret,type->parameters),
+			nativeFunction,
+			callingConvention);
+	}
+
+	Global::Global(Intrinsics::Module& moduleRef,const char* inName,IR::ValueType inType,Runtime::Value inValue)
+	: name(inName)
+	, type(inType)
+	, value(inValue)
+	{
+		initializeModule(moduleRef);
+
+		if(moduleRef.impl->globalMap.count(name))
+		{
+			Errors::fatalf("Intrinsic global already registered: %s",name);
+		}
+		moduleRef.impl->globalMap[name] = this;
+	}
+
+	Runtime::GlobalInstance* Global::instantiate(Runtime::Compartment* compartment)
+	{
+		return Runtime::createGlobal(compartment,IR::GlobalType(type,false),value);
+	}
+
+	Table::Table(Intrinsics::Module& moduleRef,const char* inName,const IR::TableType& inType)
+	: name(inName)
+	, type(inType)
+	{
+		initializeModule(moduleRef);
+
+		if(moduleRef.impl->tableMap.count(name))
+		{
+			Errors::fatalf("Intrinsic table already registered: %s",name);
+		}
+		moduleRef.impl->tableMap[name] = this;
+	}
+
+	Runtime::TableInstance* Table::instantiate(Runtime::Compartment* compartment)
+	{
+		return Runtime::createTable(compartment,type);
+	}
 	
-	std::string getDecoratedName(const std::string& name,const IR::ObjectType& type)
+	Memory::Memory(Intrinsics::Module& moduleRef,const char* inName,const IR::MemoryType& inType)
+	: name(inName)
+	, type(inType)
 	{
-		std::string decoratedName = name;
-		decoratedName += " : ";
-		decoratedName += IR::asString(type);
-		return decoratedName;
-	}
+		initializeModule(moduleRef);
 
-	Function::Function(const char* inName,const IR::FunctionType* type,void* nativeFunction)
-	:	name(inName)
-	{
-		function = new Runtime::FunctionInstance(nullptr,type,nativeFunction);
-		Platform::Lock lock(Singleton::get().mutex);
-		const std::string decoratedName = getDecoratedName(inName,type);
-		if(Singleton::get().functionMap.count(decoratedName))
+		if(moduleRef.impl->memoryMap.count(name))
 		{
-			Errors::fatalf("Intrinsic function already registered: %s",decoratedName.c_str());
+			Errors::fatalf("Intrinsic memory already registered: %s",name);
 		}
-		Singleton::get().functionMap[decoratedName] = this;
+		moduleRef.impl->memoryMap[name] = this;
 	}
 
-	Function::~Function()
+	Runtime::MemoryInstance* Memory::instantiate(Runtime::Compartment* compartment)
 	{
-		{
-			Platform::Lock Lock(Singleton::get().mutex);
-			Singleton::get().functionMap.erase(Singleton::get().functionMap.find(getDecoratedName(name,function->type)));
-		}
-		delete function;
+		return Runtime::createMemory(compartment,type);
 	}
 
-	Global::Global(const char* inName,IR::GlobalType inType)
-	:	name(inName)
-	,	globalType(inType)
+	Runtime::ModuleInstance* instantiateModule(
+		Runtime::Compartment* compartment,
+		const Intrinsics::Module& moduleRef)
 	{
-		global = Runtime::createGlobal(inType,Runtime::Value((I64)0));
-		value = &global->value;
+		auto moduleInstance = new Runtime::ModuleInstance(compartment,{},{},{},{},{});
+
+		if(moduleRef.impl)
 		{
-			Platform::Lock lock(Singleton::get().mutex);
-			const std::string decoratedName = getDecoratedName(inName,inType);
-			if(Singleton::get().variableMap.count(decoratedName))
+			for(const auto& pair : moduleRef.impl->functionMap)
 			{
-				Errors::fatalf("Intrinsic global already registered: %s",decoratedName.c_str());
+				auto functionInstance = pair.second->instantiate(compartment);
+				moduleInstance->functions.push_back(functionInstance);
+				moduleInstance->exportMap[pair.first] = functionInstance;
 			}
-			Singleton::get().variableMap[decoratedName] = this;
-		}
-	}
 
-	Global::~Global()
-	{
-		{
-			Platform::Lock Lock(Singleton::get().mutex);
-			Singleton::get().variableMap.erase(Singleton::get().variableMap.find(getDecoratedName(name,global->type)));
-		}
-		delete global;
-	}
+			for(const auto& pair : moduleRef.impl->tableMap)
+			{
+				auto tableInstance = pair.second->instantiate(compartment);
+				moduleInstance->tables.push_back(tableInstance);
+				moduleInstance->exportMap[pair.first] = tableInstance;
+			}
 
-	void Global::reset()
-	{
-		global = Runtime::createGlobal(globalType,Runtime::Value((I64)0));
-		value = &global->value;
-	}
+			for(const auto& pair : moduleRef.impl->memoryMap)
+			{
+				auto memoryInstance = pair.second->instantiate(compartment);
+				moduleInstance->memories.push_back(memoryInstance);
+				moduleInstance->exportMap[pair.first] = memoryInstance;
+			}
 
-	Table::Table(const char* inName,const IR::TableType& type)
-	: name(inName)
-	, table(Runtime::createTable(type))
-	{
-		if(!table) { Errors::fatal("failed to create intrinsic table"); }
+			for(const auto& pair : moduleRef.impl->globalMap)
+			{
+				auto globalInstance = pair.second->instantiate(compartment);
+				moduleInstance->globals.push_back(globalInstance);
+				moduleInstance->exportMap[pair.first] = globalInstance;
+			}
+		}
 
-		Platform::Lock lock(Singleton::get().mutex);
-		const std::string decoratedName = getDecoratedName(inName,type);
-		if(Singleton::get().tableMap.count(decoratedName))
-		{
-			Errors::fatalf("Intrinsic table already registered: %s",decoratedName.c_str());
-		}
-		Singleton::get().tableMap[decoratedName] = this;
-	}
-	
-	Table::~Table()
-	{
-		{
-			Platform::Lock Lock(Singleton::get().mutex);
-			Singleton::get().tableMap.erase(Singleton::get().tableMap.find(getDecoratedName(name,table->type)));
-		}
-		delete table;
-	}
-	
-	Memory::Memory(const char* inName,const IR::MemoryType& type)
-	: name(inName)
-	, memory(Runtime::createMemory(type))
-	{
-		if(!memory) { Errors::fatal("failed to create intrinsic memory"); }
-
-		Platform::Lock lock(Singleton::get().mutex);
-		const std::string decoratedName = getDecoratedName(inName,type);
-		if(Singleton::get().memoryMap.count(decoratedName))
-		{
-			Errors::fatalf("Intrinsic memory already registered: %s",decoratedName.c_str());
-		}
-		Singleton::get().memoryMap[decoratedName] = this;
-	}
-	
-	Memory::~Memory()
-	{
-		{
-			Platform::Lock Lock(Singleton::get().mutex);
-			Singleton::get().memoryMap.erase(Singleton::get().memoryMap.find(getDecoratedName(name,memory->type)));
-		}
-		delete memory;
-	}
-
-	Runtime::ObjectInstance* find(const std::string& name,const IR::ObjectType& type)
-	{
-		std::string decoratedName = getDecoratedName(name,type);
-		Platform::Lock Lock(Singleton::get().mutex);
-		Runtime::ObjectInstance* result = nullptr;
-		switch(type.kind)
-		{
-		case IR::ObjectKind::function:
-		{
-			auto keyValue = Singleton::get().functionMap.find(decoratedName);
-			result = keyValue == Singleton::get().functionMap.end() ? nullptr : asObject(keyValue->second->getObject());
-			break;
-		}
-		case IR::ObjectKind::table:
-		{
-			auto keyValue = Singleton::get().tableMap.find(decoratedName);
-			result = keyValue == Singleton::get().tableMap.end() ? nullptr : asObject((Runtime::TableInstance*)*keyValue->second);
-			break;
-		}
-		case IR::ObjectKind::memory:
-		{
-			auto keyValue = Singleton::get().memoryMap.find(decoratedName);
-			result = keyValue == Singleton::get().memoryMap.end() ? nullptr : asObject((Runtime::MemoryInstance*)*keyValue->second);
-			break;
-		}
-		case IR::ObjectKind::global:
-		{
-			auto keyValue = Singleton::get().variableMap.find(decoratedName);
-			result = keyValue == Singleton::get().variableMap.end() ? nullptr : asObject(keyValue->second->getObject());
-			break;
-		}
-		default: Errors::unreachable();
-		};
-		if(result && !isA(result,type)) { result = nullptr; }
-		return result;
+		return moduleInstance;
 	}
 }

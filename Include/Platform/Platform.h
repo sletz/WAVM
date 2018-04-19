@@ -1,30 +1,28 @@
 #pragma once
 
-#include <assert.h>
-#include <vector>
-#include <functional>
-
 #include "Inline/BasicTypes.h"
 
+#include <assert.h>
+#include <functional>
+#include <string>
+#include <vector>
+
 #ifdef _WIN32
-	#define THREAD_LOCAL thread_local
-	#define DLL_EXPORT __declspec(dllexport)
-	#define DLL_IMPORT __declspec(dllimport)
 	#define FORCEINLINE __forceinline
+	#define FORCENOINLINE __declspec(noinline)
 	#define SUPPRESS_UNUSED(variable) (void)(variable);
 	#include <intrin.h>
 	#define PACKED_STRUCT(definition) __pragma(pack(push, 1)) definition; __pragma(pack(pop))
+	#define NO_ASAN
+	#define RETURNS_TWICE
 #else
-	// Use __thread instead of the C++11 thread_local because Apple's clang doesn't support thread_local yet.
-	#define THREAD_LOCAL __thread
-	#define DLL_EXPORT
-	#define DLL_IMPORT
 	#define FORCEINLINE inline __attribute__((always_inline))
+	#define FORCENOINLINE __attribute__((noinline))
 	#define SUPPRESS_UNUSED(variable) (void)(variable);
 	#define PACKED_STRUCT(definition) definition __attribute__((packed));
+	#define NO_ASAN __attribute__((no_sanitize_address))
+	#define RETURNS_TWICE __attribute__((returns_twice))
 #endif
-
-#define STRUCT_OFFSET(type,field) Uptr((U8*)&((type*)nullptr)->field - (U8*)nullptr)
 
 #ifndef PLATFORM_API
 	#define PLATFORM_API DLL_IMPORT
@@ -57,6 +55,16 @@ namespace Platform
 	inline U64 ceilLogTwo(U64 value) { return floorLogTwo(value * 2 - 1); }
 	inline U32 ceilLogTwo(U32 value) { return floorLogTwo(value * 2 - 1); }
 
+	inline U64 saturateToBounds(U64 value,U64 maxValue)
+	{
+		return U64(value + ((I64(maxValue - value) >> 63) & (maxValue - value)));
+	}
+
+	inline U32 saturateToBounds(U32 value,U32 maxValue)
+	{
+		return U32(value + ((I32(maxValue - value) >> 31) & (maxValue - value)));
+	}
+
 	//
 	// Memory
 	//
@@ -78,6 +86,10 @@ namespace Platform
 	// Returns the base virtual address of the allocated addresses, or nullptr if the virtual address space has been exhausted.
 	PLATFORM_API U8* allocateVirtualPages(Uptr numPages);
 
+	// Allocates virtual addresses without commiting physical pages to them.
+	// Returns the base virtual address of the allocated addresses, or nullptr if the virtual address space has been exhausted.
+	PLATFORM_API U8* allocateAlignedVirtualPages(Uptr numPages,Uptr alignmentLog2,U8*& outUnalignedBaseAddress);
+
 	// Commits physical memory to the specified virtual pages.
 	// baseVirtualAddress must be a multiple of the preferred page size.
 	// Return true if successful, or false if physical memory has been exhausted.
@@ -93,8 +105,12 @@ namespace Platform
 	PLATFORM_API void decommitVirtualPages(U8* baseVirtualAddress,Uptr numPages);
 
 	// Frees virtual addresses. Any physical memory committed to the addresses must have already been decommitted.
-	// baseVirtualAddress must be a multiple of the preferred page size.
+	// baseVirtualAddress must also be an address returned by allocateVirtualPages.
 	PLATFORM_API void freeVirtualPages(U8* baseVirtualAddress,Uptr numPages);
+
+	// Frees an aligned virtual address block. Any physical memory committed to the addresses must have already been decommitted.
+	// unalignedBaseAddress must be the unaligned base address returned by allocateAlignedVirtualPages.
+	PLATFORM_API void freeAlignedVirtualPages(U8* unalignedBaseAddress,Uptr numPages,Uptr alignmentLog2);
 
 	//
 	// Call stack and exceptions
@@ -122,28 +138,48 @@ namespace Platform
 		PLATFORM_API void deregisterSEHUnwindInfo(Uptr pdataAddress);
 	#endif
 
-	struct AccessViolationSignalData
+	struct Signal
 	{
-		Uptr address;
+		enum class Type
+		{
+			invalid = 0,
+			accessViolation,
+			stackOverflow,
+			intDivideByZeroOrOverflow,
+			unhandledException
+		};
+
+		Type type = Type::invalid;
+
+		union
+		{
+			struct
+			{
+				Uptr address;
+			} accessViolation;
+
+			struct
+			{
+				void* data;
+			} unhandledException;
+		};
 	};
 
-	enum SignalType
-	{
-		accessViolation,
-		stackOverflow,
-		intDivideByZeroOrOverflow,
-	};
 	PLATFORM_API bool catchSignals(
 		const std::function<void()>& thunk,
-		const std::function<void(SignalType,void*,CallStack&&)>& handler
+		const std::function<bool(Signal signal,const CallStack&)>& filter
 		);
-	
+
+	typedef bool (*SignalHandler)(Signal,const CallStack&);
+
+	PLATFORM_API void setSignalHandler(SignalHandler handler);
+
 	// Calls a thunk, catching any platform exceptions raised.
 	// If a platform exception is caught, the exception is passed to the handler function, and true is returned.
 	// If no exceptions are caught, false is returned.
 	PLATFORM_API bool catchPlatformExceptions(
 		const std::function<void()>& thunk,
-		const std::function<void(void*,CallStack&&)>& handler
+		const std::function<void(void*,const CallStack&)>& handler
 		);
 
 	[[noreturn]] PLATFORM_API void raisePlatformException(void* data);
@@ -158,6 +194,14 @@ namespace Platform
 	// Threading
 	//
 
+	struct Thread;
+	PLATFORM_API Thread* createThread(Uptr numStackBytes,I64 (*threadEntry)(void*),void* argument);
+	PLATFORM_API void detachThread(Thread* thread);
+	PLATFORM_API I64 joinThread(Thread* thread);
+	[[noreturn]] PLATFORM_API void exitThread(I64 code);
+	
+	RETURNS_TWICE PLATFORM_API Thread* forkCurrentThread();
+
 	// Returns the current value of a clock that may be used as an absolute time for wait timeouts.
 	// The resolution is microseconds, and the origin is arbitrary.
 	PLATFORM_API U64 getMonotonicClock();
@@ -166,29 +210,14 @@ namespace Platform
 	struct Mutex;
 	PLATFORM_API Mutex* createMutex();
 	PLATFORM_API void destroyMutex(Mutex* mutex);
-	PLATFORM_API void lockMutex(Mutex* mutex);
-	PLATFORM_API void unlockMutex(Mutex* mutex);
 
 	// RAII-style lock for Mutex.
 	struct Lock
 	{
-		Lock(Mutex* inMutex) : mutex(inMutex) { lockMutex(mutex); }
-		~Lock() { unlockMutex(mutex); }
+		PLATFORM_API Lock(Mutex* inMutex);
+		~Lock() { unlock(); }
 
-		void release()
-		{
-			if(mutex)
-			{
-				unlockMutex(mutex);
-			}
-			mutex = nullptr;
-		}
-
-		void detach()
-		{
-			assert(mutex);
-			mutex = nullptr;
-		}
+		PLATFORM_API void unlock();
 
 	private:
 		Mutex* mutex;
@@ -200,4 +229,48 @@ namespace Platform
 	PLATFORM_API void destroyEvent(Event* event);
 	PLATFORM_API bool waitForEvent(Event* event,U64 untilClock);
 	PLATFORM_API void signalEvent(Event* event);
+
+	//
+	// File I/O
+	//
+
+	enum class FileAccessMode
+	{
+		readOnly = 0x1,
+		writeOnly = 0x2,
+		readWrite = 0x1 | 0x2,
+	};
+
+	enum class FileCreateMode
+	{
+		createAlways,
+		createNew,
+		openAlways,
+		openExisting,
+		truncateExisting,
+	};
+
+	enum class StdDevice
+	{
+		in,
+		out,
+		err,
+	};
+
+	enum class FileSeekOrigin
+	{
+		begin = 0,
+		cur = 1,
+		end = 2
+	};
+
+	struct File;
+	PLATFORM_API File* openFile(const std::string& pathName,FileAccessMode accessMode,FileCreateMode createMode);
+	PLATFORM_API bool closeFile(File* file);
+	PLATFORM_API File* getStdFile(StdDevice device);
+	PLATFORM_API bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64& outAbsoluteOffset);
+	PLATFORM_API bool readFile(File* file,U8* outData,Uptr numBytes,Uptr& outNumBytesRead);
+	PLATFORM_API bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr& outNumBytesWritten);
+	PLATFORM_API bool flushFileWrites(File* file);
+	PLATFORM_API std::string getCurrentWorkingDirectory();
 }

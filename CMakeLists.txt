@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 2.7.0)
-project (WAVM)
+project (WAVM C CXX ASM)
+
+# Enable MAXOSX_RPATH by default
+cmake_policy(SET CMP0042 NEW)
 
 enable_testing()
 
@@ -14,6 +17,9 @@ set(WAVM_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/Include)
 include_directories(${WAVM_INCLUDE_DIR})
 
 if(MSVC)
+	add_definitions("-DDLL_EXPORT=__declspec(dllexport)")
+	add_definitions("-DDLL_IMPORT=__declspec(dllimport)")
+
 	# Taken out of the VC projects to avoid the compiler complaining about POSIX code
 	add_definitions(-D_SCL_SECURE_NO_WARNINGS)
 	add_definitions(-D_SCL_SECURE_NO_DEPRECATE)
@@ -52,7 +58,12 @@ if(MSVC)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4702")
 	# disable warning: The result of the unary '&' operator may be unaligned
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4366")
+	# disable warning: structure was padded due to alignment specifier
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4324")
 else()
+	add_definitions(-DDLL_EXPORT=)
+	add_definitions(-DDLL_IMPORT=)
+
 	# Use C++11
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
@@ -68,14 +79,20 @@ else()
 	# Enable asan in debug builds.
 	if(CMAKE_BUILD_TYPE MATCHES "Debug")
 		option(ENABLE_ASAN "enable ASAN" ON)
-		add_definitions("-D_DEBUG")
 	else()
 		option(ENABLE_ASAN "enable ASAN" OFF)
 	endif()
 	if(ENABLE_ASAN)
 		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
 	endif()
+
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fomit-frame-pointer")
 endif()
+
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DWAVM_DEBUG=1")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DWAVM_DEBUG=0")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -DWAVM_DEBUG=0")
+set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL} -DWAVM_DEBUG=0")
 
 option(WAVM_METRICS_OUTPUT "controls printing the timings of some operations to stdout" OFF)
 if(WAVM_METRICS_OUTPUT)
@@ -84,51 +101,27 @@ else()
 	add_definitions("-DWAVM_METRICS_OUTPUT=0")
 endif()
 
-option(PRETEND_32BIT_ADDRESS_SPACE "forces 64-bit WAVM to reserve address-space as it would in a 32-bit process" OFF)
-if(PRETEND_32BIT_ADDRESS_SPACE)
-	add_definitions("-DPRETEND_32BIT_ADDRESS_SPACE=1")
-else()
-	add_definitions("-DPRETEND_32BIT_ADDRESS_SPACE=0")
-endif()
+option(ENABLE_RUNTIME "enables the runtime components of WAVM" ON)
 
-option(ENABLE_SIMD_PROTOTYPE "enables the prototype implementation of the proposed WebAssembly SIMD extension" ON)
-if(ENABLE_SIMD_PROTOTYPE)
-	add_definitions("-DENABLE_SIMD_PROTOTYPE=1")
-else()
-	add_definitions("-DENABLE_SIMD_PROTOTYPE=0")
-endif()
-
-option(ENABLE_THREADING_PROTOTYPE "enables the prototype implementation of the proposed WebAssembly threading extension" ON)
-if(ENABLE_THREADING_PROTOTYPE)
-	add_definitions("-DENABLE_THREADING_PROTOTYPE=1")
-else()
-	add_definitions("-DENABLE_THREADING_PROTOTYPE=0")
-endif()
-
-option(ENABLE_EXCEPTION_PROTOTYPE "enables the prototype implementation of the proposed WebAssembly threading extension" ON)
-if(ENABLE_EXCEPTION_PROTOTYPE)
-	add_definitions("-DENABLE_EXCEPTION_PROTOTYPE=1")
-else()
-	add_definitions("-DENABLE_EXCEPTION_PROTOTYPE=0")
-endif()
-
-option(ENABLE_NONTRAPPING_FPTOINT_PROTOTYPE "enables the prototype implementation of the proposed WebAssembly non-trapping float-to-int extension" ON)
-if(ENABLE_NONTRAPPING_FPTOINT_PROTOTYPE)
-	add_definitions("-DENABLE_NONTRAPPING_FPTOINT_PROTOTYPE=1")
-else()
-	add_definitions("-DENABLE_NONTRAPPING_FPTOINT_PROTOTYPE=0")
-endif()
+function(WAVM_ADD_LIBRARY TARGET_NAME)
+	add_library(${TARGET_NAME} SHARED ${ARGN})
+endfunction(WAVM_ADD_LIBRARY)
 
 add_subdirectory(Include/Inline)
 
-add_subdirectory(Source/Emscripten)
 add_subdirectory(Source/IR)
 add_subdirectory(Source/Logging)
 add_subdirectory(Source/Platform)
 add_subdirectory(Source/Programs)
-add_subdirectory(Source/Runtime)
+
 add_subdirectory(Source/WASM)
 add_subdirectory(Source/WAST)
+add_subdirectory(Source/Wavix)
 
-add_subdirectory(Test/spec)
-add_subdirectory(Test/WAVM)
+if(ENABLE_RUNTIME)
+	add_subdirectory(Source/Emscripten)
+	add_subdirectory(Source/Runtime)
+	add_subdirectory(Source/ThreadTest)
+	add_subdirectory(Test/spec)
+	add_subdirectory(Test/WAVM)
+endif()

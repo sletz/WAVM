@@ -18,10 +18,7 @@ namespace IR
 		i64 = 2,
 		f32 = 3,
 		f64 = 4,
-
-	#if ENABLE_SIMD_PROTOTYPE
 		v128 = 5,
-	#endif
 
 		num,
 		max = num-1
@@ -47,23 +44,24 @@ namespace IR
 		return std::string(buffer);
 	}
 
-	#if ENABLE_SIMD_PROTOTYPE
 	template<> struct ValueTypeInfo<ValueType::v128> { typedef V128 Value; };
-	#endif
-	
-	inline U8 getTypeBitWidth(ValueType type)
+
+	inline U8 getTypeByteWidth(ValueType type)
 	{
 		switch(type)
 		{
-		case ValueType::i32: return 32;
-		case ValueType::i64: return 64;
-		case ValueType::f32: return 32;
-		case ValueType::f64: return 64;
-		#if ENABLE_SIMD_PROTOTYPE
-		case ValueType::v128: return 128;
-		#endif
+		case ValueType::i32: return 4;
+		case ValueType::i64: return 8;
+		case ValueType::f32: return 4;
+		case ValueType::f64: return 8;
+		case ValueType::v128: return 16;
 		default: Errors::unreachable();
 		};
+	}
+
+	inline U8 getTypeBitWidth(ValueType type)
+	{
+		return getTypeByteWidth(type) * 8;
 	}
 	
 	inline const char* asString(ValueType type)
@@ -75,9 +73,7 @@ namespace IR
 		case ValueType::i64: return "i64";
 		case ValueType::f32: return "f32";
 		case ValueType::f64: return "f64";
-		#if ENABLE_SIMD_PROTOTYPE
 		case ValueType::v128: return "v128";
-		#endif
 		default: Errors::unreachable();
 		};
 	}
@@ -90,9 +86,7 @@ namespace IR
 		i64 = (U8)ValueType::i64,
 		f32 = (U8)ValueType::f32,
 		f64 = (U8)ValueType::f64,
-		#if ENABLE_SIMD_PROTOTYPE
 		v128 = (U8)ValueType::v128,
-		#endif
 		num,
 		max = num-1,
 	};
@@ -107,9 +101,7 @@ namespace IR
 		case ResultType::i64: return "i64";
 		case ResultType::f32: return "f32";
 		case ResultType::f64: return "f64";
-		#if ENABLE_SIMD_PROTOTYPE
 		case ResultType::v128: return "v128";
-		#endif
 		case ResultType::none: return "()";
 		default: Errors::unreachable();
 		};
@@ -127,6 +119,19 @@ namespace IR
 		assert(type != ValueType::any);
 		return (ResultType)type;
 	}
+
+	// Infer value and result types from a C type.
+
+	template<typename> constexpr IR::ValueType inferValueType() = delete;
+	template<> constexpr IR::ValueType inferValueType<I32>()  { return IR::ValueType::i32; }
+	template<> constexpr IR::ValueType inferValueType<U32>()  { return IR::ValueType::i32; }
+	template<> constexpr IR::ValueType inferValueType<I64>()  { return IR::ValueType::i64; }
+	template<> constexpr IR::ValueType inferValueType<U64>()  { return IR::ValueType::i64; }
+	template<> constexpr IR::ValueType inferValueType<F32>()  { return IR::ValueType::f32; }
+	template<> constexpr IR::ValueType inferValueType<F64>()  { return IR::ValueType::f64; }
+
+	template<typename T> constexpr IR::ResultType inferResultType() { return IR::ResultType(inferValueType<T>()); }
+	template<> constexpr IR::ResultType inferResultType<void>() { return IR::ResultType::none; }
 
 	// The type of a WebAssembly function
 	struct FunctionType
@@ -149,11 +154,6 @@ namespace IR
 		U32 index;
 	};
 
-	struct IndexedExceptionType
-	{
-		U32 index;
-	};
-	
 	inline std::string asString(const std::vector<ValueType>& typeTuple)
 	{
 		std::string result = "(";
@@ -251,46 +251,43 @@ namespace IR
 	{
 		std::vector<ValueType> elements;
 
-		friend bool operator==(const TupleType& left,const TupleType& right)
-		{
-			return left.elements == right.elements;
-		}
+		IR_API static const TupleType* get(const std::initializer_list<ValueType>& elements);
+		IR_API static const TupleType* get(const std::vector<ValueType>& elements);
+
+	private:
+
+		TupleType(const std::vector<ValueType>& inElements)
+			: elements(inElements) {}
 	};
-	
-	inline std::string asString(const TupleType& tupleType)
+
+	inline std::string asString(const TupleType* tupleType)
 	{
-		std::string result = "(";
-		for(auto elementType : tupleType.elements)
-		{
-			if(result.size()) { result += ','; }
-			result += asString(elementType);
-		}
-		result += ')';
-		return result;
+		return asString(tupleType->elements);
 	}
 	
 	// The type of an object
 	enum class ObjectKind : U8
 	{
+		// Standard object kinds that may be imported/exported from WebAssembly modules.
 		function = 0,
 		table = 1,
 		memory = 2,
 		global = 3,
-		module = 4,
-		exceptionType = 5,
-		max = 5,
+		exceptionType = 4,
+		max = 4,
 		invalid = 0xff,
 	};
 	struct ObjectType
 	{
 		const ObjectKind kind;
 
-		ObjectType()							: kind(ObjectKind::invalid) {}
+		ObjectType()								: kind(ObjectKind::invalid) {}
 		ObjectType(const FunctionType* inFunction)	: kind(ObjectKind::function), function(inFunction) {}
-		ObjectType(TableType inTable)			: kind(ObjectKind::table), table(inTable) {}
-		ObjectType(MemoryType inMemory)		: kind(ObjectKind::memory), memory(inMemory) {}
-		ObjectType(GlobalType inGlobal)			: kind(ObjectKind::global), global(inGlobal) {}
-		ObjectType(ObjectKind inKind)			: kind(inKind) {}
+		ObjectType(TableType inTable)				: kind(ObjectKind::table), table(inTable) {}
+		ObjectType(MemoryType inMemory)				: kind(ObjectKind::memory), memory(inMemory) {}
+		ObjectType(GlobalType inGlobal)				: kind(ObjectKind::global), global(inGlobal) {}
+		ObjectType(const TupleType* inExceptionType): kind(ObjectKind::exceptionType), exceptionType(inExceptionType) {}
+		ObjectType(ObjectKind inKind)				: kind(inKind) {}
 
 		friend const FunctionType* asFunctionType(const ObjectType& objectType)
 		{
@@ -312,6 +309,11 @@ namespace IR
 			assert(objectType.kind == ObjectKind::global);
 			return objectType.global;
 		}
+		friend const TupleType* asExceptionTypeType(const ObjectType& objectType)
+		{
+			assert(objectType.kind == ObjectKind::exceptionType);
+			return objectType.exceptionType;
+		}
 
 	private:
 
@@ -321,6 +323,7 @@ namespace IR
 			TableType table;
 			MemoryType memory;
 			GlobalType global;
+			const TupleType* exceptionType;
 		};
 	};
 
@@ -332,7 +335,7 @@ namespace IR
 		case ObjectKind::table: return "table";
 		case ObjectKind::memory: return "memory";
 		case ObjectKind::global: return asString(asGlobalType(objectType));
-		case ObjectKind::exceptionType: return "exception_type";
+		case ObjectKind::exceptionType: return "exception_type " + asString(asExceptionTypeType(objectType));
 		default: Errors::unreachable();
 		};
 	}
