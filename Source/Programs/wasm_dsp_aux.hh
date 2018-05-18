@@ -79,21 +79,21 @@ class wasm_dsp : public dsp {
     
         FAUSTFLOAT getParamValue(int index)
         {
-            std::vector<Value> invokeArgs;
-            Value dsp_arg = DSP_BASE;
-            Value index_arg = index;
+            std::vector<IR::Value> invokeArgs;
+            IR::Value dsp_arg = DSP_BASE;
+            IR::Value index_arg = index;
             invokeArgs.push_back(dsp_arg);
             invokeArgs.push_back(index_arg);
             auto functionResult = invokeFunctionChecked(context, fGetParamValue, invokeArgs);
-            return (sizeof(FAUSTFLOAT) == 4) ? functionResult.f32 : functionResult.f64;
+            return (sizeof(FAUSTFLOAT) == 4) ? functionResult[0].f32 : functionResult[0].f64;
         }
         
         void setParamValue(int index, FAUSTFLOAT value)
         {
-            std::vector<Value> invokeArgs;
-            Value dsp_arg = DSP_BASE;
-            Value index_arg = index;
-            Value value_arg = value;
+            std::vector<IR::Value> invokeArgs;
+            IR::Value dsp_arg = DSP_BASE;
+            IR::Value index_arg = index;
+            IR::Value value_arg = value;
             invokeArgs.push_back(dsp_arg);
             invokeArgs.push_back(index_arg);
             invokeArgs.push_back(value_arg);
@@ -103,11 +103,11 @@ class wasm_dsp : public dsp {
         void computeAux(int count)
         {
             // Call wasm compute
-            std::vector<Value> invokeArgs;
-            Value dsp_arg = DSP_BASE;
-            Value count_arg = count;
-            Value ins_arg = I32(fWasmInputs);
-            Value outs_arg = I32(fWasmOutputs);
+            std::vector<IR::Value> invokeArgs;
+            IR::Value dsp_arg = DSP_BASE;
+            IR::Value count_arg = count;
+            IR::Value ins_arg = I32(fWasmInputs);
+            IR::Value outs_arg = I32(fWasmOutputs);
             invokeArgs.push_back(dsp_arg);
             invokeArgs.push_back(count_arg);
             invokeArgs.push_back(ins_arg);

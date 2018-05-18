@@ -45,7 +45,7 @@ struct RootResolver : Resolver
     RootResolver(Compartment* inCompartment): compartment(inCompartment)
     {
         // Steph : 19/04/18
-        moduleNameToInstanceMap["env"] = Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(env));
+        moduleNameToInstanceMap["env"] = instantiateModule(compartment,INTRINSIC_MODULE_REF(env), "env");
     }
     
     bool resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,Object*& outObject) override
@@ -89,6 +89,7 @@ struct RootResolver : Resolver
                 
                 // Generate a module for the stub function.
                 Module stubModule;
+                
                 DisassemblyNames stubModuleNames;
                 stubModule.types.push_back(asFunctionType(type));
                 stubModule.functions.defs.push_back({{0},{},std::move(codeStream.getBytes()),{}});
@@ -98,7 +99,7 @@ struct RootResolver : Resolver
                 IR::validateDefinitions(stubModule);
                 
                 // Instantiate the module and return the stub function instance.
-                auto stubModuleInstance = instantiateModule(compartment,stubModule,{});
+                auto stubModuleInstance = instantiateModule(compartment,stubModule,{},"importStub");
                 return getInstanceExport(stubModuleInstance,"importStub");
             }
             case IR::ObjectKind::memory:
@@ -114,11 +115,11 @@ struct RootResolver : Resolver
                 return asObject(Runtime::createGlobal(
                                                       compartment,
                                                       asGlobalType(type),
-                                                      Runtime::Value(asGlobalType(type).valueType,Runtime::UntaggedValue())));
+                                                      IR::Value(asGlobalType(type).valueType,IR::UntaggedValue())));
             }
             case IR::ObjectKind::exceptionType:
             {
-                return asObject(Runtime::createExceptionTypeInstance(asExceptionTypeType(type)));
+                return asObject(Runtime::createExceptionTypeInstance(asExceptionType(type), "importStub"));
             }
             default: Errors::unreachable();
         };
@@ -198,7 +199,7 @@ wasm_dsp::wasm_dsp(Module* module)
         throw std::bad_alloc();
     }
     
-    fModuleInstance = instantiateModule(compartment, *module, std::move(linkResult.resolvedImports));
+    fModuleInstance = instantiateModule(compartment, *module, std::move(linkResult.resolvedImports), "Module");
     if (!fModuleInstance) {
         std::cerr << "Failed to instantiateModule" << std::endl;
         throw std::bad_alloc();
@@ -288,7 +289,7 @@ int wasm_dsp::getNumInputs()
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
     auto functionResult = invokeFunctionChecked(context,fGetNumInputs, invokeArgs);
-    return functionResult.i32;
+    return functionResult[0].i32;
 }
         
 int wasm_dsp::getNumOutputs()
@@ -297,7 +298,7 @@ int wasm_dsp::getNumOutputs()
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
     auto functionResult = invokeFunctionChecked(context,fGetNumOutputs, invokeArgs);
-    return functionResult.i32;
+    return functionResult[0].i32;
 }
 
 void wasm_dsp::buildUserInterface(UI* ui_interface)
@@ -311,7 +312,7 @@ int wasm_dsp::getSampleRate()
     Value dsp_arg = DSP_BASE;
     invokeArgs.push_back(dsp_arg);
     auto functionResult = invokeFunctionChecked(context,fGetSampleRate, invokeArgs);
-    return functionResult.i32;
+    return functionResult[0].i32;
 }
 
 void wasm_dsp::init(int samplingRate)
