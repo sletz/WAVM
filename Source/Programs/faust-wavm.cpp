@@ -24,7 +24,11 @@
 #include "faust/gui/OSCUI.h"
 #include "faust/gui/faustgtk.h"
 #include "faust/audio/jack-dsp.h"
+#include "faust/audio/coreaudio-dsp.h"
 #include "faust/misc.h"
+
+#include "faust/midi/rt-midi.h"
+#include "faust/midi/RtMidi.cpp"
 
 using namespace IR;
 using namespace Runtime;
@@ -78,6 +82,10 @@ int mainBody(const char* filename_aux, int argc, char** args)
     // Create an instance
     dsp* DSP = nullptr;
     
+#ifndef JACK
+    rt_midi midi_handler(basename((char*)filename));
+#endif
+    
     try {
         if (is_emcc) {
             DSP = new emcc_dsp(emcc_dsp::gFactoryModule, extractName(filename));
@@ -91,7 +99,10 @@ int mainBody(const char* filename_aux, int argc, char** args)
     
     if (nvoices > 0) {
         cout << "Starting polyphonic mode nvoices : " << nvoices << endl;
-        DSP = dsp_poly = new mydsp_poly(DSP, nvoices, false, false);
+        DSP = dsp_poly = new mydsp_poly(DSP, nvoices, true, true);
+    #ifndef JACK
+        midi_handler.addMidiIn(dsp_poly);
+    #endif
     }
 
     // Create GUI
@@ -102,7 +113,11 @@ int mainBody(const char* filename_aux, int argc, char** args)
     DSP->buildUserInterface(finterface);
     
     // Create JACK audio driver with the DSP
+#ifdef JACK
     jackaudio_midi audio;
+#else
+    coreaudio audio(44100, 128);
+#endif
     
     if (!audio.init(basename((char*)filename), DSP)) {
         return 0;
@@ -122,15 +137,27 @@ int mainBody(const char* filename_aux, int argc, char** args)
     }
     
     if (is_midi) {
+    #ifdef JACK
         midiinterface = new MidiUI(&audio);
+    #else
+        midiinterface = new MidiUI(&midi_handler);
+    #endif
         DSP->buildUserInterface(midiinterface);
     }
     
     if (nvoices > 0) {
+    #ifdef JACK
         audio.addMidiIn(dsp_poly);
+    #endif
     }
 
     audio.start();
+    
+    if (is_midi) {
+        if (!midiinterface->run()) {
+            std::cerr << "MidiUI run error\n";
+        }
+    }
     
     if (is_httpd) {
         httpdinterface->run();
@@ -138,10 +165,6 @@ int mainBody(const char* filename_aux, int argc, char** args)
     
     if (is_osc) {
         oscinterface->run();
-    }
-    
-    if (is_osc) {
-        midiinterface->run();
     }
    
     interface->run();
@@ -176,11 +199,6 @@ int commandMain(int argc, char** argv)
 
 int main(int argc,char** argv)
 {
-    if(argc != 2) {
-        std::cerr <<  "Usage: Test in.wast" << std::endl;
-        return EXIT_FAILURE;
-    }
-
     // Treat any unhandled exception (e.g. in a thread) as a fatal error.
     Runtime::setUnhandledExceptionHandler([](Runtime::Exception&& exception)
                                           {

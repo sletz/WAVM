@@ -33,6 +33,15 @@ add_executable(faust-wavm faust-wavm.cpp wasm_dsp_aux.cpp emcc_dsp_aux.cpp CLI.h
 target_link_libraries(faust-wavm jack OSCFaust HTTPDFaust microhttpd)
 target_link_libraries(faust-wavm ${GTK2_LIBRARIES})
 
+# Coreaudio needed frameworks
+target_link_libraries(faust-wavm "-framework CoreAudio")
+target_link_libraries(faust-wavm "-framework AudioUnit")
+target_link_libraries(faust-wavm "-framework CoreServices")
+target_link_libraries(faust-wavm "-framework CoreMIDI")
+target_link_libraries(faust-wavm "-framework CoreFoundation")
+set_target_properties(faust-wavm PROPERTIES LINK_FLAGS "-Wl,-F/Library/Frameworks")
+
+
 target_link_libraries(faust-wavm Logging IR WAST WASM Runtime Emscripten)
 set_target_properties(faust-wavm PROPERTIES FOLDER Programs)
 
