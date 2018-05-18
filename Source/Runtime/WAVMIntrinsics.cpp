@@ -1,3 +1,4 @@
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Floats.h"
 #include "Logging/Logging.h"
@@ -152,20 +153,27 @@ namespace Runtime
 		throwException(Exception::invalidFloatOperationType);
 	}
 	
-	DEFINE_INTRINSIC_FUNCTION(wavmIntrinsics,"indirectCallSignatureMismatch",void,indirectCallSignatureMismatch,
-		I32 index, I64 expectedSignatureBits, I64 tableId)
+	DEFINE_INTRINSIC_FUNCTION_WITH_MEM_AND_TABLE(
+		wavmIntrinsics, "indirectCallSignatureMismatch",
+		void, indirectCallSignatureMismatch,
+		I32 index, Uptr expectedSignatureBits
+		)
 	{
-		TableInstance* table = getTableFromRuntimeData(contextRuntimeData,tableId);
-		assert(table);
+		TableInstance* table = getTableFromRuntimeData(contextRuntimeData, defaultTableId.id);
+		wavmAssert(table);
 		void* elementValue = table->baseAddress[index].value;
-		const FunctionType* actualSignature = table->baseAddress[index].type;
-		const FunctionType* expectedSignature = reinterpret_cast<const FunctionType*>((Uptr)expectedSignatureBits);
+		FunctionType actualSignature {table->baseAddress[index].typeEncoding};
+		FunctionType expectedSignature {FunctionType::Encoding {expectedSignatureBits}};
 		std::string ipDescription = "<unknown>";
 		LLVMJIT::describeInstructionPointer(reinterpret_cast<Uptr>(elementValue),ipDescription);
-		Log::printf(Log::Category::debug,"call_indirect signature mismatch: expected %s at index %u but got %s (%s)\n",
+		Log::printf(
+			Log::Category::debug,
+			"call_indirect signature mismatch: expected %s at index %u but got %s (%s)\n",
 			asString(expectedSignature).c_str(),
 			index,
-			actualSignature ? asString(actualSignature).c_str() : "nullptr",
+			table->baseAddress[index].typeEncoding.impl
+				? asString(actualSignature).c_str()
+				: "nullptr",
 			ipDescription.c_str()
 			);
 		throwException(elementValue == nullptr ? Exception::undefinedTableElementType : Exception::indirectCallSignatureMismatchType);
@@ -179,7 +187,7 @@ namespace Runtime
 	DEFINE_INTRINSIC_FUNCTION(wavmIntrinsics,"growMemory",I32,_growMemory,I32 deltaPages,I64 memoryId)
 	{
 		MemoryInstance* memory = getMemoryFromRuntimeData(contextRuntimeData,memoryId);
-		assert(memory);
+		wavmAssert(memory);
 		const Iptr numPreviousMemoryPages = growMemory(memory,(Uptr)deltaPages);
 		if(numPreviousMemoryPages + (Uptr)deltaPages > IR::maxMemoryPages) { return -1; }
 		else { return (I32)numPreviousMemoryPages; }
@@ -188,7 +196,7 @@ namespace Runtime
 	DEFINE_INTRINSIC_FUNCTION(wavmIntrinsics,"currentMemory",I32,_currentMemory,I64 memoryId)
 	{
 		MemoryInstance* memory = getMemoryFromRuntimeData(contextRuntimeData,memoryId);
-		assert(memory);
+		wavmAssert(memory);
 		Uptr numMemoryPages = getMemoryNumPages(memory);
 		if(numMemoryPages > UINT32_MAX) { numMemoryPages = UINT32_MAX; }
 		return (U32)numMemoryPages;
@@ -220,6 +228,6 @@ namespace Runtime
 	Runtime::ModuleInstance* instantiateWAVMIntrinsics(Compartment* compartment)
 	{
 		dummyReferenceAtomics();
-		return Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(wavmIntrinsics));
+		return Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(wavmIntrinsics),"WAVMIntrinsics");
 	}
 }

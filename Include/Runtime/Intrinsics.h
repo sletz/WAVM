@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Inline/BasicTypes.h"
+#include "Inline/HashMap.h"
 #include "IR/IR.h"
 #include "IR/TaggedValue.h"
 #include "Runtime.h"
@@ -18,7 +19,10 @@ namespace Intrinsics
 
 	RUNTIME_API Runtime::ModuleInstance* instantiateModule(
 		Runtime::Compartment* compartment,
-		const Intrinsics::Module& moduleRef);
+		const Intrinsics::Module& moduleRef,
+		std::string&& debugName,
+		const HashMap<std::string, Runtime::Object*>& extraExports = {}
+		);
 
 	// An intrinsic function.
 	struct Function
@@ -27,13 +31,13 @@ namespace Intrinsics
 			Intrinsics::Module& moduleRef,
 			const char* inName,
 			void* inNativeFunction,
-			const IR::FunctionType* type,
+			IR::FunctionType type,
 			Runtime::CallingConvention inCallingConvention);
 		RUNTIME_API Runtime::FunctionInstance* instantiate(Runtime::Compartment* compartment);
 
 	private:
 		const char* name;
-		const IR::FunctionType* type;
+		IR::FunctionType type;
 		void* nativeFunction;
 		Runtime::CallingConvention callingConvention;
 	};
@@ -45,15 +49,15 @@ namespace Intrinsics
 			Intrinsics::Module& moduleRef,
 			const char* inName,
 			IR::ValueType inType,
-			Runtime::Value inValue);
+			IR::Value inValue);
 		RUNTIME_API Runtime::GlobalInstance* instantiate(Runtime::Compartment* compartment);
 
-		Runtime::Value getValue() const { return value; }
+		IR::Value getValue() const { return value; }
 
 	private:
 		const char* name;
 		IR::ValueType type;
-		Runtime::Value value;
+		IR::Value value;
 	};
 	
 	// An immutable global that provides typed initialization and reading of the global's value.
@@ -63,7 +67,7 @@ namespace Intrinsics
 		GenericGlobal(Intrinsics::Module& moduleRef,const char* inName,Value inValue)
 		: Global(
 			moduleRef, inName, IR::inferValueType<Value>(),
-			Runtime::Value(IR::inferValueType<Value>(),inValue))
+			IR::Value(IR::inferValueType<Value>(),inValue))
 		{}
 	};
 
@@ -123,22 +127,22 @@ namespace Intrinsics
 	}
 
 	template<typename R,typename... Args>
-	const IR::FunctionType* inferIntrinsicFunctionType(
+	IR::FunctionType inferIntrinsicFunctionType(
 		R (*)(Runtime::ContextRuntimeData*,Args...))
 	{
-		return IR::FunctionType::get(IR::inferResultType<R>(),{IR::inferValueType<Args>()...});
+		return IR::FunctionType(IR::inferResultType<R>(),IR::TypeTuple({IR::inferValueType<Args>()...}));
 	}
 	template<typename R,typename... Args>
-	const IR::FunctionType* inferIntrinsicWithMemAndTableFunctionType(
+	IR::FunctionType inferIntrinsicWithMemAndTableFunctionType(
 		R (*)(Runtime::ContextRuntimeData*,MemoryIdArg,TableIdArg,Args...))
 	{
-		return IR::FunctionType::get(IR::inferResultType<R>(),{IR::inferValueType<Args>()...});
+		return IR::FunctionType(IR::inferResultType<R>(),IR::TypeTuple({IR::inferValueType<Args>()...}));
 	}
 	template<typename R,typename... Args>
-	const IR::FunctionType* inferIntrinsicWithContextSwitchFunctionType(
+	IR::FunctionType inferIntrinsicWithContextSwitchFunctionType(
 		ResultInContextRuntimeData<R>* (*)(Runtime::ContextRuntimeData*,Args...))
 	{
-		return IR::FunctionType::get(IR::inferResultType<R>(),{IR::inferValueType<Args>()...});
+		return IR::FunctionType(IR::inferResultType<R>(),IR::TypeTuple({IR::inferValueType<Args>()...}));
 	}
 
 }

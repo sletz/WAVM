@@ -1,11 +1,13 @@
 #ifndef _WIN32
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Errors.h"
 #include "Platform/Platform.h"
 #include "Logging/Logging.h"
 
 #include <atomic>
+#include <cxxabi.h>
 #include <errno.h>
 #include <exception>
 #include <fcntl.h>
@@ -22,15 +24,14 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#ifdef __linux__
-	#include <dlfcn.h>
-	#include <execinfo.h>
-#endif
+#define UNW_LOCAL_ONLY
+#include "libunwind.h"
+
+#include <dlfcn.h>
 
 #ifdef __APPLE__
 	#define MAP_ANONYMOUS MAP_ANON
 	#define UC_RESET_ALT_STACK	0x80000000			
-	extern "C" int __sigreturn(ucontext_t *, int);
 #endif
 
 #ifdef __linux__
@@ -63,12 +64,6 @@ static_assert(sizeof(ExecutionContext)       == 64, "unexpected size");
 
 extern "C"
 {
-	// C++ ABI exception handling functions
-	extern void* __cxa_allocate_exception(size_t numBytes) throw();
-	extern void __cxa_free_exception(void* exception) throw();
-	extern void __cxa_throw(void* exception,void* exceptionTypeInfo,void (*dest)(void*));
-	extern std::type_info* __cxa_current_exception_type();
-
 	// Defined in POSIX.S
 	extern I64 saveExecutionState(ExecutionContext* outContext,I64 returnCode) noexcept(false);
 	[[noreturn]] extern void loadExecutionState(ExecutionContext* context,I64 returnCode);
@@ -79,6 +74,10 @@ extern "C"
 	{
 		return "handle_segv=false:handle_sigbus=false:handle_sigfpe=false:replace_intrin=false";
 	}
+
+	// libunwind dynamic frame registration
+	void __register_frame(const void* fde);
+	void __deregister_frame(const void* fde);
 }
 
 namespace Platform
@@ -87,7 +86,7 @@ namespace Platform
 	{
 		U32 preferredVirtualPageSize = sysconf(_SC_PAGESIZE);
 		// Verify our assumption that the virtual page size is a power of two.
-		assert(!(preferredVirtualPageSize & (preferredVirtualPageSize - 1)));
+		wavmAssert(!(preferredVirtualPageSize & (preferredVirtualPageSize - 1)));
 		return floorLogTwo(preferredVirtualPageSize);
 	}
 	Uptr getPageSizeLog2()
@@ -101,11 +100,11 @@ namespace Platform
 		switch(access)
 		{
 		default:
-		case MemoryAccess::None: return PROT_NONE;
-		case MemoryAccess::ReadOnly: return PROT_READ;
-		case MemoryAccess::ReadWrite: return PROT_READ | PROT_WRITE;
-		case MemoryAccess::Execute: return PROT_EXEC;
-		case MemoryAccess::ReadWriteExecute: return PROT_EXEC | PROT_READ | PROT_WRITE;
+		case MemoryAccess::none: return PROT_NONE;
+		case MemoryAccess::readOnly: return PROT_READ;
+		case MemoryAccess::readWrite: return PROT_READ | PROT_WRITE;
+		case MemoryAccess::execute: return PROT_EXEC;
+		case MemoryAccess::readWriteExecute: return PROT_EXEC | PROT_READ | PROT_WRITE;
 		}
 	}
 
@@ -144,7 +143,7 @@ namespace Platform
 				result + (numPages << pageSizeLog2),
 				alignmentBytes - (alignedAddress - address)));
 
-			outUnalignedBaseAddress = unalignedBaseAddress;
+			outUnalignedBaseAddress = result;
 			return result;
 		}
 		else
@@ -186,17 +185,85 @@ namespace Platform
 		if(munmap(unalignedBaseAddress,numPages << getPageSizeLog2())) { Errors::fatal("munmap failed"); }
 	}
 
+	Mutex& getErrorReportingMutex()
+	{
+		static Platform::Mutex mutex;
+		return mutex;
+	}
+
+	void dumpErrorCallStack(Uptr numOmittedFramesFromTop)
+	{
+		std::fprintf(stderr, "Call stack:\n");
+		CallStack callStack = captureCallStack(numOmittedFramesFromTop);
+		for(auto frame : callStack.stackFrames)
+		{
+			std::string frameDescription;
+			if(!Platform::describeInstructionPointer(frame.ip,frameDescription))
+			{
+				frameDescription = "<unknown function>";
+			}
+			std::fprintf(stderr, "  %s\n", frameDescription.c_str());
+		}
+		std::fflush(stderr);
+	}
+
+	void handleFatalError(const char* messageFormat,va_list varArgs)
+	{
+		Lock lock(getErrorReportingMutex());
+		std::vfprintf(stderr,messageFormat,varArgs);
+		std::fflush(stderr);
+		dumpErrorCallStack(3);
+		std::abort();
+	}
+
+	void handleAssertionFailure(const AssertMetadata& metadata)
+	{
+		Lock lock(getErrorReportingMutex());
+		std::fprintf(
+			stderr,
+			"Assertion failed at %s(%u): %s\n",
+			metadata.file,
+			metadata.line,
+			metadata.condition
+			);
+		dumpErrorCallStack(2);
+		std::fflush(stderr);
+	}
+	
 	bool describeInstructionPointer(Uptr ip,std::string& outDescription)
 	{
-		#ifdef __linux__
-			// Look up static symbol information for the address.
-			Dl_info symbolInfo;
-			if(dladdr((void*)ip,&symbolInfo) && symbolInfo.dli_sname)
+		// Look up static symbol information for the address.
+		Dl_info symbolInfo;
+		if(dladdr((void*)(ip-1),&symbolInfo))
+		{
+			wavmAssert(symbolInfo.dli_fname);
+			outDescription = "host!";
+			outDescription += symbolInfo.dli_fname;
+			outDescription += '!';
+			if(!symbolInfo.dli_sname) { outDescription += "<unknown>"; }
+			else
 			{
-				outDescription = symbolInfo.dli_sname;
-				return true;
+				char demangledBuffer[1024];
+				const char* demangledSymbolName = symbolInfo.dli_sname;
+				if(symbolInfo.dli_sname[0] == '_')
+				{
+					Uptr numDemangledChars = sizeof(demangledBuffer);
+					I32 demangleStatus = 0;
+					if(abi::__cxa_demangle(
+						symbolInfo.dli_sname,
+						demangledBuffer,
+						(size_t*)&numDemangledChars,
+						&demangleStatus))
+					{
+						demangledSymbolName = demangledBuffer;
+					}
+				}
+				outDescription += demangledSymbolName;
+				outDescription += '+';
+				outDescription += std::to_string(ip - reinterpret_cast<Uptr>(symbolInfo.dli_saddr));
 			}
-		#endif
+			return true;
+		}
 		return false;
 	}
 
@@ -438,24 +505,69 @@ namespace Platform
 
 	CallStack captureCallStack(Uptr numOmittedFramesFromTop)
 	{
-		#ifdef __linux__
-			// Unwind the callstack.
-			enum { maxCallStackSize = SigAltStack::numBytes / sizeof(void*) / 8 };
-			void* callstackAddresses[maxCallStackSize];
-			auto numCallStackEntries = backtrace(callstackAddresses,maxCallStackSize);
+		CallStack result;
+		
+		unw_context_t context;
+		errorUnless(!unw_getcontext(&context));
 
-			// Copy the return pointers into the stack frames of the resulting CallStack.
-			// Skip the first numOmittedFramesFromTop+1 frames, which correspond to this function
-			// and others that the caller would like to omit.
-			CallStack result;
-			for(Iptr index = numOmittedFramesFromTop + 1;index < numCallStackEntries;++index)
+		unw_cursor_t cursor;
+
+		errorUnless(!unw_init_local(&cursor, &context));
+		while(unw_step(&cursor) > 0)
+		{
+			if(numOmittedFramesFromTop)
 			{
-				result.stackFrames.push_back({(Uptr)callstackAddresses[index]});
+				--numOmittedFramesFromTop;
 			}
-			return result;
-		#else
-			return CallStack();
-		#endif
+			else
+			{
+				unw_word_t ip;
+				errorUnless(!unw_get_reg(&cursor, UNW_REG_IP, &ip));
+
+				result.stackFrames.push_back(CallStack::Frame {ip});
+			}
+		}
+
+		return result;
+	}
+
+	void visitFDEs(U8* ehFrames, Uptr numBytes, void (*visitFDE)(const void*))
+	{
+		// The LLVM project libunwind implementation that WAVM uses expects __register_frame and
+		// __deregister_frame to be called for each FDE in the .eh_frame section.
+		const U8* next = ehFrames;
+		const U8* end = ehFrames + numBytes;
+		do
+		{
+			const U8* cfi = next;
+			Uptr numCFIBytes = *((const U32*)next);
+			next += 4;
+			if(numBytes == 0xffffffff)
+			{
+				const U64 numCFIBytes64 = *((const U64*)next);
+				errorUnless(numCFIBytes64 <= UINTPTR_MAX);
+				numCFIBytes = Uptr(numCFIBytes64);
+				next += 8;
+			}
+			const U32 cieOffset = *((const U32*)next);
+			if(cieOffset != 0)
+			{
+				visitFDE(cfi);
+			}
+
+			next += numCFIBytes;
+		}
+		while(next < end);
+	}
+
+	void registerEHFrames(U8* ehFrames, Uptr numBytes)
+	{
+		visitFDEs(ehFrames, numBytes, __register_frame);
+	}
+
+	void deregisterEHFrames(U8* ehFrames, Uptr numBytes)
+	{
+		visitFDEs(ehFrames, numBytes, __deregister_frame);
 	}
 
 	bool catchPlatformExceptions(
@@ -471,7 +583,7 @@ namespace Platform
 		catch(PlatformException exception)
 		{
 			handler(exception.data,exception.callStack);
-			if(exception.data) { delete [] (U8*)exception.data; }
+			if(exception.data) { free(exception.data); }
 			return true;
 		}
 	}
@@ -487,10 +599,10 @@ namespace Platform
 			}
 			catch(PlatformException)
 			{
-				typeInfo = __cxa_current_exception_type();
+				typeInfo = __cxxabiv1::__cxa_current_exception_type();
 			}
 		}
-		assert(typeInfo);
+		wavmAssert(typeInfo);
 		return typeInfo;
 	}
 
@@ -692,37 +804,26 @@ namespace Platform
 		#endif
 	}
 
-	struct Mutex
+	Mutex::Mutex()
 	{
-		pthread_mutex_t pthreadMutex;
-	};
-
-	Mutex* createMutex()
-	{
-		auto mutex = new Mutex();
-		errorUnless(!pthread_mutex_init(&mutex->pthreadMutex,nullptr));
-		return mutex;
+		static_assert(sizeof(pthreadMutex) == sizeof(pthread_mutex_t), "");
+		static_assert(alignof(PthreadMutex) >= alignof(pthread_mutex_t), "");
+		errorUnless(!pthread_mutex_init((pthread_mutex_t*)&pthreadMutex,nullptr));
 	}
 
-	void destroyMutex(Mutex* mutex)
+	Mutex::~Mutex()
 	{
-		errorUnless(!pthread_mutex_destroy(&mutex->pthreadMutex));
-		delete mutex;
+		errorUnless(!pthread_mutex_destroy((pthread_mutex_t*)&pthreadMutex));
 	}
 
-	Lock::Lock(Mutex* inMutex)
-		: mutex(inMutex)
+	void Mutex::lock()
 	{
-		errorUnless(!pthread_mutex_lock(&mutex->pthreadMutex));
+		errorUnless(!pthread_mutex_lock((pthread_mutex_t*)&pthreadMutex));
 	}
 
-	void Lock::unlock()
+	void Mutex::unlock()
 	{
-		if(mutex)
-		{
-			errorUnless(!pthread_mutex_unlock(&mutex->pthreadMutex));
-			mutex = nullptr;
-		}
+		errorUnless(!pthread_mutex_unlock((pthread_mutex_t*)&pthreadMutex));
 	}
 
 	struct Event
@@ -856,7 +957,7 @@ namespace Platform
 		};
 	}
 
-	bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64& outAbsoluteOffset)
+	bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64* outAbsoluteOffset)
 	{
 		I32 whence = 0;
 		switch(origin)
@@ -872,22 +973,31 @@ namespace Platform
 		#else
 			const I64 result = lseek(filePtrToIndex(file), reinterpret_cast<off_t>(offset), whence);
 		#endif
-		outAbsoluteOffset = U64(result);
+		if(outAbsoluteOffset)
+		{
+			*outAbsoluteOffset = U64(result);
+		}
 		return result != -1;
 	}
 
-	bool readFile(File* file, U8* outData,Uptr numBytes,Uptr& outNumBytesRead)
+	bool readFile(File* file, U8* outData,Uptr numBytes,Uptr* outNumBytesRead)
 	{
 		ssize_t result = read(filePtrToIndex(file),outData,numBytes);
-		outNumBytesRead = result;
-		return result == Iptr(numBytes);
+		if(outNumBytesRead)
+		{
+			*outNumBytesRead = result;
+		}
+		return result >= 0;
 	}
 
-	bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr& outNumBytesWritten)
+	bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr* outNumBytesWritten)
 	{
 		ssize_t result = write(filePtrToIndex(file),data,numBytes);
-		outNumBytesWritten = result;
-		return result == Iptr(numBytes);
+		if(outNumBytesWritten)
+		{
+			*outNumBytesWritten = result;
+		}
+		return result >= 0;
 	}
 
 	bool flushFileWrites(File* file)

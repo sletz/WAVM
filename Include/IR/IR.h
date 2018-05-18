@@ -10,11 +10,12 @@ namespace IR
 	enum : U64 { maxTableElems = U64(UINT32_MAX) + 1 };
 	enum { numBytesPerPage = (Uptr)65536 };
 	enum { numBytesPerPageLog2 = (Uptr)16 };
+	enum { maxReturnValues = (Uptr)16 };
 
 	struct FeatureSpec
 	{
 		// A feature flag for the MVP, just so the MVP operators can reference it as the required feature flag.
-		const bool mvp = true;
+		bool mvp = true;
 
 		// Proposed standard extensions
 		bool importExportMutableGlobals = true;
@@ -24,6 +25,7 @@ namespace IR
 		bool exceptionHandling = true;
 		bool nonTrappingFloatToInt = true;
 		bool extendedSignExtension = true;
+		bool multipleResultsAndBlockParams = true;
 
 		// WAVM-specific extensions
 		bool sharedTables = true;

@@ -1,10 +1,11 @@
 #include "Inline/BasicTypes.h"
 #include "Inline/Timing.h"
-#include "WAST.h"
-#include "Lexer.h"
 #include "IR/Module.h"
 #include "IR/Validate.h"
+#include "Lexer.h"
+#include "Logging/Logging.h"
 #include "Parse.h"
+#include "WAST.h"
 
 using namespace WAST;
 using namespace IR;
@@ -66,12 +67,12 @@ static GlobalType parseGlobalType(CursorState* cursor)
 	return result;
 }
 
-static const TupleType* parseTupleType(CursorState* cursor)
+static TypeTuple parseTypeTuple(CursorState* cursor)
 {
 	std::vector<ValueType> parameters;
 	ValueType elementType;
 	while(tryParseValueType(cursor,elementType)) { parameters.push_back(elementType); }
-	return TupleType::get(parameters);
+	return TypeTuple(parameters);
 }
 
 static InitializerExpression parseInitializerExpression(CursorState* cursor)
@@ -229,12 +230,12 @@ static void parseImport(CursorState* cursor)
 		}
 		case t_exception_type:
 		{
-			const TupleType* tupleType = parseTupleType(cursor);
+			TypeTuple params = parseTypeTuple(cursor);
 			createImport(cursor,name,std::move(moduleName),std::move(exportName),
 				cursor->moduleState->exceptionTypeNameToIndexMap,
 				cursor->moduleState->module.exceptionTypes,
 				cursor->moduleState->disassemblyNames.exceptionTypes,
-				tupleType);
+				ExceptionType {params});
 			break;
 		}
 		default: Errors::unreachable();
@@ -302,12 +303,12 @@ static void parseType(CursorState* cursor)
 		
 		NameToIndexMap parameterNameToIndexMap;
 		std::vector<std::string> localDisassemblyNames;
-		const FunctionType* functionType = parseFunctionType(cursor,parameterNameToIndexMap,localDisassemblyNames);
+		FunctionType functionType = parseFunctionType(cursor,parameterNameToIndexMap,localDisassemblyNames);
 
-		Uptr functionTypeIndex = cursor->moduleState->module.types.size();
+		errorUnless(cursor->moduleState->module.types.size() < UINT32_MAX);
+		const U32 functionTypeIndex = U32(cursor->moduleState->module.types.size());
 		cursor->moduleState->module.types.push_back(functionType);
-		errorUnless(functionTypeIndex < UINT32_MAX);
-		cursor->moduleState->functionTypeToIndexMap[functionType] = (U32)functionTypeIndex;
+		cursor->moduleState->functionTypeToIndexMap.set(functionType,functionTypeIndex);
 
 		bindName(cursor->parseState,cursor->moduleState->typeNameToIndexMap,name,functionTypeIndex);
 		cursor->moduleState->disassemblyNames.types.push_back(name.getString());
@@ -647,13 +648,17 @@ static void parseExceptionType(CursorState* cursor)
 		cursor->moduleState->disassemblyNames.exceptionTypes,
 		t_exception_type,
 		ObjectKind::exceptionType,
-		// Parse a global import.
-		parseTupleType,
-		// Parse a global definition
+		// Parse an exception type import.
+		[](CursorState* cursor)
+		{
+			TypeTuple params = parseTypeTuple(cursor);
+			return ExceptionType {params};
+		},
+		// Parse an exception type definition
 		[](CursorState* cursor,const Token*)
 		{
-			const TupleType* tupleType = parseTupleType(cursor);
-			return ExceptionTypeDef {tupleType};
+			TypeTuple params = parseTypeTuple(cursor);
+			return ExceptionTypeDef {ExceptionType {params}};
 		});
 }
 
@@ -699,6 +704,27 @@ static void parseDeclaration(CursorState* cursor)
 			throw RecoverParseException();
 		};
 	});
+}
+
+template<typename Map>
+void dumpHashMapSpaceAnalysis(const Map& map, const char* description)
+{
+	Uptr totalMemoryBytes = 0;
+	Uptr maxProbeCount = 0;
+	F32 occupancy = 0.0f;
+	F32 averageProbeCount = 0.0f;
+	map.analyzeSpaceUsage(totalMemoryBytes, maxProbeCount, occupancy, averageProbeCount);
+	Log::printf(
+		Log::Category::metrics,
+		"%s used %.1fKB for %u elements (%.0f%% occupancy, %.1f bytes/element). Avg/max probe length: %f/%u\n",
+		description,
+		totalMemoryBytes / 1024.0f,
+		map.size(),
+		occupancy * 100.0f,
+		F32(totalMemoryBytes) / map.size(),
+		averageProbeCount,
+		maxProbeCount
+		);
 }
 
 namespace WAST
@@ -749,11 +775,20 @@ namespace WAST
 			}
 
 			// Set the module's disassembly names.
-			assert(outModule.functions.size() == moduleState.disassemblyNames.functions.size());
-			assert(outModule.tables.size() == moduleState.disassemblyNames.tables.size());
-			assert(outModule.memories.size() == moduleState.disassemblyNames.memories.size());
-			assert(outModule.globals.size() == moduleState.disassemblyNames.globals.size());
+			wavmAssert(outModule.functions.size() == moduleState.disassemblyNames.functions.size());
+			wavmAssert(outModule.tables.size() == moduleState.disassemblyNames.tables.size());
+			wavmAssert(outModule.memories.size() == moduleState.disassemblyNames.memories.size());
+			wavmAssert(outModule.globals.size() == moduleState.disassemblyNames.globals.size());
 			IR::setDisassemblyNames(outModule,moduleState.disassemblyNames);
+			
+			// If metrics logging is enabled, log some statistics about the module's name maps.
+			if(Log::isCategoryEnabled(Log::Category::metrics))
+			{
+				dumpHashMapSpaceAnalysis(moduleState.functionNameToIndexMap, "functionNameToIndexMap");
+				dumpHashMapSpaceAnalysis(moduleState.globalNameToIndexMap, "globalNameToIndexMap");
+				dumpHashMapSpaceAnalysis(moduleState.functionTypeToIndexMap, "functionTypeToIndexMap");
+				dumpHashMapSpaceAnalysis(moduleState.typeNameToIndexMap, "typeNameToIndexMap");
+			}
 		}
 		catch(RecoverParseException)
 		{

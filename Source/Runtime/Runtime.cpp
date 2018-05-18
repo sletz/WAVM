@@ -1,3 +1,4 @@
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Logging/Logging.h"
 #include "Runtime.h"
@@ -15,7 +16,7 @@ namespace Runtime
 		case IR::ObjectKind::global: return asGlobalType(type) == asGlobal(object)->type;
 		case IR::ObjectKind::table: return isSubset(asTableType(type),asTable(object)->type);
 		case IR::ObjectKind::memory: return isSubset(asMemoryType(type),asMemory(object)->type);
-		case IR::ObjectKind::exceptionType: return asExceptionTypeType(type) == asExceptionType(object)->parameters;
+		case IR::ObjectKind::exceptionType: return asExceptionType(type) == asExceptionTypeInstance(object)->type;
 		default: Errors::unreachable();
 		}
 	}
@@ -28,14 +29,14 @@ namespace Runtime
 		case Runtime::ObjectKind::global: return asGlobal(object)->type;
 		case Runtime::ObjectKind::table: return asTable(object)->type;
 		case Runtime::ObjectKind::memory: return asMemory(object)->type;
-		case Runtime::ObjectKind::exceptionType: return asExceptionType(object)->parameters;
+		case Runtime::ObjectKind::exceptionTypeInstance: return asExceptionTypeInstance(object)->type;
 		default: Errors::unreachable();
 		};
 	}
 
 	UntaggedValue* invokeFunctionUnchecked(Context* context,FunctionInstance* function,const UntaggedValue* arguments)
 	{
-		const FunctionType* functionType = function->type;
+		FunctionType functionType = function->type;
 		
 		// Get the invoke thunk for this function type.
 		auto invokeFunctionPointer = LLVMJIT::getInvokeThunk(functionType,function->callingConvention);
@@ -44,9 +45,9 @@ namespace Runtime
 		ContextRuntimeData* contextRuntimeData = &context->compartment->runtimeData->contexts[context->id];
 		U8* argData = contextRuntimeData->thunkArgAndReturnData;
 		Uptr argDataOffset = 0;
-		for(Uptr argumentIndex = 0;argumentIndex < functionType->parameters.size();++argumentIndex)
+		for(Uptr argumentIndex = 0;argumentIndex < functionType.params().size();++argumentIndex)
 		{
-			const ValueType type = functionType->parameters[argumentIndex];
+			const ValueType type = functionType.params()[argumentIndex];
 			const UntaggedValue& argument = arguments[argumentIndex];
 			if(type == ValueType::v128)
 			{
@@ -71,19 +72,19 @@ namespace Runtime
 		return (UntaggedValue*)contextRuntimeData->thunkArgAndReturnData;
 	}
 
-	Result invokeFunctionChecked(Context* context,FunctionInstance* function,const std::vector<Value>& arguments)
+	ValueTuple invokeFunctionChecked(Context* context,FunctionInstance* function,const std::vector<Value>& arguments)
 	{
-		const FunctionType* functionType = function->type;
+		FunctionType functionType = function->type;
 
 		// Check that the parameter types match the function, and copy them into a memory block that stores each as a 64-bit value.
-		if(arguments.size() != functionType->parameters.size())
+		if(arguments.size() != functionType.params().size())
 		{ throwException(Exception::invokeSignatureMismatchType); }
 
 		// Convert the arguments from a vector of TaggedValues to a stack-allocated block of UntaggedValues.
 		UntaggedValue* untaggedArguments = (UntaggedValue*)alloca(arguments.size() * sizeof(UntaggedValue));
 		for(Uptr argumentIndex = 0;argumentIndex < arguments.size();++argumentIndex)
 		{
-			if(functionType->parameters[argumentIndex] != arguments[argumentIndex].type)
+			if(functionType.params()[argumentIndex] != arguments[argumentIndex].type)
 			{
 				throwException(Exception::invokeSignatureMismatchType);
 			}
@@ -91,17 +92,35 @@ namespace Runtime
 			untaggedArguments[argumentIndex] = arguments[argumentIndex];
 		}
 
-		return Result(functionType->ret,*invokeFunctionUnchecked(context,function,untaggedArguments));
+		// Call the unchecked version of this function to do the actual invoke.
+		U8* resultStructBase = (U8*)invokeFunctionUnchecked(context,function,untaggedArguments);
+
+		// Read the return values out of the context's scratch memory.
+		ValueTuple results;
+		Uptr resultOffset = 0;
+		for(ValueType resultType : functionType.results())
+		{
+			const U8 resultNumBytes = getTypeByteWidth(resultType);
+
+			resultOffset = (resultOffset + resultNumBytes - 1) & -I8(resultNumBytes);
+			wavmAssert(resultOffset < maxThunkArgAndReturnBytes);
+
+			UntaggedValue* result = (UntaggedValue*)(resultStructBase + resultOffset);
+			results.values.push_back(Value(resultType, *result));
+
+			resultOffset += resultNumBytes;
+		}
+		return results;
 	}
 	
-	const FunctionType* getFunctionType(FunctionInstance* function)
+	FunctionType getFunctionType(FunctionInstance* function)
 	{
 		return function->type;
 	}
 
 	GlobalInstance* createGlobal(Compartment* compartment,GlobalType type,Value initialValue)
 	{
-		assert(initialValue.type == type.valueType);
+		wavmAssert(initialValue.type == type.valueType);
 
 		// Allow immutable globals to be created without a compartment.
 		errorUnless(!type.isMutable || compartment);
@@ -146,7 +165,7 @@ namespace Runtime
 
 	Value getGlobalValue(Context* context,GlobalInstance* global)
 	{
-		assert(context || !global->type.isMutable);
+		wavmAssert(context || !global->type.isMutable);
 		return Value(
 			global->type.valueType,
 			global->type.isMutable
@@ -156,9 +175,9 @@ namespace Runtime
 
 	Value setGlobalValue(Context* context,GlobalInstance* global,Value newValue)
 	{
-		assert(context);
-		assert(newValue.type == global->type.valueType);
-		assert(global->type.isMutable);
+		wavmAssert(context);
+		wavmAssert(newValue.type == global->type.valueType);
+		wavmAssert(global->type.isMutable);
 		UntaggedValue& value = *(UntaggedValue*)(context->runtimeData->globalData + global->mutableDataOffset);
 		const Value previousValue = Value(global->type.valueType,value);
 		value = newValue;
@@ -167,7 +186,6 @@ namespace Runtime
 
 	Compartment::Compartment()
 	: ObjectImpl(ObjectKind::compartment)
-	, mutex(Platform::createMutex())
 	, unalignedRuntimeData(nullptr)
 	, numGlobalBytes(0)
 	{
@@ -187,7 +205,6 @@ namespace Runtime
 
 	Compartment::~Compartment()
 	{
-		Platform::destroyMutex(mutex);
 		Platform::decommitVirtualPages((U8*)runtimeData,compartmentReservedBytes >> Platform::getPageSizeLog2());
 		Platform::freeAlignedVirtualPages(unalignedRuntimeData,
 			compartmentReservedBytes >> Platform::getPageSizeLog2(),
@@ -213,10 +230,10 @@ namespace Runtime
 			GlobalInstance* global = compartment->globals[globalIndex];
 			GlobalInstance* newGlobal = cloneGlobal(global,newCompartment);
 			SUPPRESS_UNUSED(newGlobal);
-			assert(newGlobal->id == global->id);
-			assert(newGlobal->mutableDataOffset == global->mutableDataOffset);
+			wavmAssert(newGlobal->id == global->id);
+			wavmAssert(newGlobal->mutableDataOffset == global->mutableDataOffset);
 		}
-		assert(newCompartment->numGlobalBytes == compartment->numGlobalBytes);
+		wavmAssert(newCompartment->numGlobalBytes == compartment->numGlobalBytes);
 
 		// Clone memories.
 		for(Uptr memoryIndex = 0;memoryIndex < compartment->memories.size();++memoryIndex)
@@ -224,7 +241,7 @@ namespace Runtime
 			MemoryInstance* memory = compartment->memories[memoryIndex];
 			MemoryInstance* newMemory = cloneMemory(memory,newCompartment);
 			SUPPRESS_UNUSED(newMemory);
-			assert(newMemory->id == memory->id);
+			wavmAssert(newMemory->id == memory->id);
 		}
 
 		// Clone tables.
@@ -233,7 +250,7 @@ namespace Runtime
 			TableInstance* table = compartment->tables[tableIndex];
 			TableInstance* newTable = cloneTable(table,newCompartment);
 			SUPPRESS_UNUSED(newTable);
-			assert(newTable->id == table->id);
+			wavmAssert(newTable->id == table->id);
 		}
 
 		return newCompartment;
@@ -241,7 +258,7 @@ namespace Runtime
 
 	Context* createContext(Compartment* compartment)
 	{
-		assert(compartment);
+		wavmAssert(compartment);
 		Context* context = new Context(compartment);
 		{
 			Platform::Lock lock(compartment->mutex);
@@ -282,7 +299,7 @@ namespace Runtime
 		// Create a new context and initialize its runtime data with the values from the source context.
 		Context* clonedContext = createContext(newCompartment);
 		const Uptr numGlobalBytes = context->compartment->numGlobalBytes;
-		assert(numGlobalBytes <= newCompartment->numGlobalBytes);
+		wavmAssert(numGlobalBytes <= newCompartment->numGlobalBytes);
 		memcpy(
 			clonedContext->runtimeData->globalData,
 			context->runtimeData->globalData,
@@ -307,7 +324,7 @@ namespace Runtime
 	{
 		Compartment* compartment = getCompartmentRuntimeData(contextRuntimeData)->compartment;
 		Platform::Lock compartmentLock(compartment->mutex);
-		assert(tableId < compartment->tables.size());
+		wavmAssert(tableId < compartment->tables.size());
 		return compartment->tables[tableId];
 	}
 

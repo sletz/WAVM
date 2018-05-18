@@ -29,26 +29,29 @@ namespace IR
 		if(Stream::isInput) { type = (ValueType)-encodedValueType; }
 	}
 
-	FORCEINLINE static void serialize(InputStream& stream,ResultType& resultType)
+	FORCEINLINE static void serialize(InputStream& stream,TypeTuple& typeTuple)
 	{
-		Uptr arity;
-		serializeVarUInt1(stream,arity);
-		if(arity == 0) { resultType = ResultType::none; }
-		else
+		Uptr numElems;
+		serializeVarUInt32(stream,numElems);
+
+		std::vector<ValueType> elems;
+		for(Uptr elemIndex = 0;elemIndex < numElems;++elemIndex)
 		{
-			I8 encodedValueType = 0;
-			serializeVarInt7(stream,encodedValueType);
-			resultType = (ResultType)-encodedValueType;
+			ValueType elem;
+			serialize(stream, elem);
+			elems.push_back(elem);
 		}
+
+		typeTuple = TypeTuple(elems);
 	}
-	static void serialize(OutputStream& stream,ResultType& returnType)
+	static void serialize(OutputStream& stream,TypeTuple& typeTuple)
 	{
-		Uptr arity = returnType == ResultType::none ? 0 : 1;
-		serializeVarUInt1(stream,arity);
-		if(arity)
+		Uptr numElems = typeTuple.size();
+		serializeVarUInt32(stream,numElems);
+
+		for(ValueType elem : typeTuple)
 		{
-			I8 encodedValueType = -(I8)returnType;
-			serializeVarInt7(stream,encodedValueType);
+			serialize(stream, elem);
 		}
 	}
 	
@@ -223,12 +226,38 @@ namespace WASM
 	template<typename Stream>
 	void serialize(Stream& stream,NoImm&,const FunctionDef&) {}
 	
-	template<typename Stream>
-	void serialize(Stream& stream,ControlStructureImm& imm,const FunctionDef&)
+	static void serialize(InputStream& stream,ControlStructureImm& imm,const FunctionDef&)
 	{
-		I8 encodedResultType = imm.resultType == ResultType::none ? -64 : -(I8)imm.resultType;
-		serializeVarInt7(stream,encodedResultType);
-		if(Stream::isInput) { imm.resultType = encodedResultType == -64 ? ResultType::none : (ResultType)-encodedResultType; }
+		Iptr encodedBlockType;
+		serializeVarInt32(stream,encodedBlockType);
+		if(encodedBlockType >= 0)
+		{
+			imm.type.format = IndexedBlockType::functionType;
+			imm.type.index = encodedBlockType;
+		}
+		else if(encodedBlockType == -64)
+		{
+			imm.type.format = IndexedBlockType::noParametersOrResult;
+			imm.type.resultType = ValueType::any;
+		}
+		else
+		{
+			imm.type.format = IndexedBlockType::oneResult;
+			imm.type.resultType = ValueType(-encodedBlockType);
+		}
+	}
+	
+	static void serialize(OutputStream& stream, const ControlStructureImm& imm, const FunctionDef&)
+	{
+		Iptr encodedBlockType;
+		switch(imm.type.format)
+		{
+		case IndexedBlockType::noParametersOrResult: encodedBlockType = -64; break;
+		case IndexedBlockType::oneResult:            encodedBlockType = -Iptr(imm.type.resultType); break;
+		case IndexedBlockType::functionType:         encodedBlockType = imm.type.index; break;
+		default: Errors::unreachable();
+		};
+		serializeVarInt32(stream, encodedBlockType);
 	}
 
 	template<typename Stream>
@@ -247,7 +276,7 @@ namespace WASM
 	}
 	void serialize(OutputStream& stream,BranchTableImm& imm,FunctionDef& functionDef)
 	{
-		assert(imm.branchTableIndex < functionDef.branchTables.size());
+		wavmAssert(imm.branchTableIndex < functionDef.branchTables.size());
 		std::vector<U32>& branchTable = functionDef.branchTables[imm.branchTableIndex];
 		serializeArray(stream,branchTable,[](OutputStream& stream,U32& targetDepth){serializeVarUInt32(stream,targetDepth);});
 		serializeVarUInt32(stream,imm.defaultTargetDepth);
@@ -287,7 +316,7 @@ namespace WASM
 	template<typename Stream>
 	void serialize(Stream& stream,MemoryImm& imm,const FunctionDef&)
 	{
-		serializeConstant(stream,"grow_memory/current_memory immediate reserved field must be 0",U8(0));
+		serializeConstant(stream,"memory.grow/memory.size immediate reserved field must be 0",U8(0));
 	}
 
 	template<typename Stream>
@@ -354,7 +383,7 @@ namespace WASM
 	template<typename SerializeSection>
 	void serializeSection(InputStream& stream,SectionType expectedType,SerializeSection serializeSectionBody)
 	{
-		assert((SectionType)*stream.peek(sizeof(SectionType)) == expectedType);
+		wavmAssert((SectionType)*stream.peek(sizeof(SectionType)) == expectedType);
 		stream.advance(sizeof(SectionType));
 		Uptr numSectionBytes = 0;
 		serializeVarUInt32(stream,numSectionBytes);
@@ -384,7 +413,7 @@ namespace WASM
 		throwIfNotValidUTF8(userSection.name);
 		userSection.data.resize(sectionStream.capacity());
 		serializeBytes(sectionStream,userSection.data.data(),userSection.data.size());
-		assert(!sectionStream.capacity());
+		wavmAssert(!sectionStream.capacity());
 	}
 
 	struct LocalSet
@@ -514,21 +543,26 @@ namespace WASM
 	{
 		serializeSection(moduleStream,SectionType::type,[&module](Stream& sectionStream)
 		{
-			serializeArray(sectionStream,module.types,[](Stream& stream,const FunctionType*& functionType)
+			serializeArray(sectionStream,module.types,[](Stream& stream,FunctionType& functionType)
 			{
 				serializeConstant(stream,"function type tag",U8(0x60));
 				if(Stream::isInput)
 				{
-					std::vector<ValueType> parameterTypes;
-					ResultType returnType;
-					serialize(stream,parameterTypes);
-					serialize(stream,returnType);
-					functionType = FunctionType::get(returnType,parameterTypes);
+					TypeTuple params;
+					serialize(stream, params);
+
+					TypeTuple results;
+					serialize(stream, results);
+
+					functionType = FunctionType(results, params);
 				}
 				else
 				{
-					serialize(stream,const_cast<std::vector<ValueType>&>(functionType->parameters));
-					serialize(stream,const_cast<ResultType&>(functionType->ret));
+					TypeTuple params = functionType.params();
+					serialize(stream, params);
+
+					TypeTuple results = functionType.results();
+					serialize(stream, results);
 				}
 			});
 		});

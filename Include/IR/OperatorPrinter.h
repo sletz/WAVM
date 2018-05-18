@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Serialization.h"
 #include "IR.h"
@@ -32,13 +33,17 @@ namespace IR
 		const FunctionDef& functionDef;
 
 		std::string describeImm(NoImm) { return ""; }
-		std::string describeImm(ControlStructureImm imm) { return std::string(" : ") + asString(imm.resultType); }
+		std::string describeImm(ControlStructureImm imm)
+		{
+			const FunctionType type = resolveBlockType(module, imm.type);
+			return std::string(" : ") + asString(type.params()) + " -> " + asString(type.results());
+		}
 		std::string describeImm(BranchImm imm) { return " " + std::to_string(imm.targetDepth); }
 		std::string describeImm(BranchTableImm imm)
 		{
 			std::string result = " " + std::to_string(imm.defaultTargetDepth);
 			const char* prefix = " [";
-			assert(imm.branchTableIndex < functionDef.branchTables.size());
+			wavmAssert(imm.branchTableIndex < functionDef.branchTables.size());
 			for(auto depth : functionDef.branchTables[imm.branchTableIndex]) { result += prefix + std::to_string(depth); prefix = ","; }
 			result += "]";
 			return result;

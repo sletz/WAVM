@@ -1,12 +1,13 @@
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Floats.h"
+#include "Inline/HashMap.h"
+#include "Inline/HashSet.h"
 #include "Inline/Serialization.h"
 #include "WAST.h"
 #include "IR/Module.h"
 #include "IR/Operators.h"
 #include "Logging/Logging.h"
-
-#include <unordered_set>
 
 using namespace IR;
 using namespace Serialization;
@@ -44,6 +45,7 @@ namespace WAST
 		paddedInput += '\0';
 
 		std::string result;
+		result.reserve(paddedInput.size() * 2);
 		const char* next = paddedInput.data();
 		const char* end = paddedInput.data() + paddedInput.size() - 1;
 		Uptr indentDepth = 0;
@@ -56,7 +58,7 @@ namespace WAST
 			else if(*next == '\n')
 			{
 				result += '\n';
-				result.insert(result.end(),indentDepth*2,' ');
+				result.insert(result.end(),indentDepth * spacesPerIndentLevel,' ');
 				++next;
 			}
 			else { result += *next++; }
@@ -83,7 +85,14 @@ namespace WAST
 	};
 
 	void print(std::string& string,ValueType type) { string += asString(type); }
-	void print(std::string& string,ResultType type) { string += asString(type); }
+	void print(std::string& string,TypeTuple types)
+	{
+		for(Uptr typeIndex = 0;typeIndex < types.size();++typeIndex)
+		{
+			if(typeIndex != 0) { string += ' '; }
+			string += asString(types[typeIndex]);
+		}
+	}
 	
 	void print(std::string& string,const SizeConstraints& size)
 	{
@@ -91,26 +100,28 @@ namespace WAST
 		if(size.max != UINT64_MAX) { string += ' '; string += std::to_string(size.max); }
 	}
 
-	void print(std::string& string,const FunctionType* functionType)
+	void print(std::string& string,FunctionType functionType)
 	{
 		// Print the function parameters.
-		if(functionType->parameters.size())
+		if(functionType.params().size())
 		{
 			ScopedTagPrinter paramTag(string,"param");
-			for(Uptr parameterIndex = 0;parameterIndex < functionType->parameters.size();++parameterIndex)
+			for(Uptr paramIndex = 0;paramIndex < functionType.params().size();++paramIndex)
 			{
 				string += ' ';
-				print(string,functionType->parameters[parameterIndex]);
+				print(string, functionType.params()[paramIndex]);
 			}
 		}
 
-		// Print the function return type.
-		if(functionType->ret != ResultType::none)
+		// Print the function return types.
+		if(functionType.results().size())
 		{
-			string += ' ';
-			ScopedTagPrinter resultTag(string,"result");
-			string += ' ';
-			print(string,functionType->ret);
+			ScopedTagPrinter paramTag(string,"result");
+			for(Uptr resultIndex = 0;resultIndex < functionType.results().size();++resultIndex)
+			{
+				string += ' ';
+				print(string, functionType.results()[resultIndex]);
+			}
 		}
 	}
 
@@ -136,29 +147,37 @@ namespace WAST
 
 	struct NameScope
 	{
-		NameScope(const char inSigil): sigil(inSigil) { nameSet.insert(""); }
+		NameScope(const char inSigil,Uptr estimatedNumElements)
+		: sigil(inSigil)
+		, nameSet(estimatedNumElements)
+		, nameToUniqueIndexMap()
+		{}
 		
 		void map(std::string& name)
 		{
-			if(nameSet.count(name))
+			std::string baseName = name.size() ? name + '_' : name;
+
+			// If the name hasn't been taken yet, use it without a suffix.
+			// Otherwise, find the first instance of the name with a numeric suffix that isn't taken.
+			if(!name.size() || !nameSet.add(name))
 			{
-				std::string baseName = name;
-				Uptr uniqueIndex = 0;
+				Uptr& numPrecedingDuplicates = nameToUniqueIndexMap.getOrAdd(name, 0);
 				do
 				{
-					++uniqueIndex;
-					name = baseName + '_' + std::to_string(uniqueIndex);
+					name = baseName + std::to_string(numPrecedingDuplicates);
+					++numPrecedingDuplicates;
 				}
-				while(nameSet.count(name));
+				while(!nameSet.add(name));
 			}
-			nameSet.insert(name);
+			
 			name = sigil + name;
 		}
 
 	private:
 
 		char sigil;
-		std::unordered_set<std::string> nameSet;
+		HashSet<std::string> nameSet;
+		HashMap<std::string,Uptr> nameToUniqueIndexMap;
 	};
 
 	struct ModulePrintContext
@@ -173,7 +192,12 @@ namespace WAST
 		{
 			// Start with the names from the module's user name section, but make sure they are unique, and add the "$" sigil.
 			IR::getDisassemblyNames(module,names);
-			NameScope globalNameScope('$');
+			const Uptr numGlobalNames =
+				  names.types.size()
+				+ names.tables.size()
+				+ names.memories.size()
+				+ names.globals.size();
+			NameScope globalNameScope('$',numGlobalNames);
 			for(auto& name : names.types) { globalNameScope.map(name); }
 			for(auto& name : names.tables) { globalNameScope.map(name); }
 			for(auto& name : names.memories) { globalNameScope.map(name); }
@@ -182,13 +206,15 @@ namespace WAST
 			{
 				globalNameScope.map(function.name);
 
-				NameScope localNameScope('$');
+				NameScope localNameScope('$',function.locals.size());
 				for(auto& name : function.locals) { localNameScope.map(name); }
 			}
 		}
 
 		void printModule();
 		
+		void printLinkingSection(const IR::UserSection& linkingSection);
+
 		void printInitializerExpression(const InitializerExpression& expression)
 		{
 			switch(expression.type)
@@ -210,7 +236,7 @@ namespace WAST
 		ModulePrintContext& moduleContext;
 		const Module& module;
 		const FunctionDef& functionDef;
-		const FunctionType* functionType;
+		FunctionType functionType;
 		std::string& string;
 
 		const std::vector<std::string>& labelNames;
@@ -226,7 +252,7 @@ namespace WAST
 		, string(inModuleContext.string)
 		, labelNames(inModuleContext.names.functions[module.functions.imports.size() + functionDefIndex].labels)
 		, localNames(inModuleContext.names.functions[module.functions.imports.size() + functionDefIndex].locals)
-		, labelNameScope('$')
+		, labelNameScope('$',4)
 		, labelIndex(0)
 		{}
 
@@ -240,21 +266,21 @@ namespace WAST
 		{
 			string += "\nblock";
 			std::string labelId = printControlLabel("block");
-			printControlSignature(imm.resultType);
+			printControlSignature(imm.type);
 			pushControlStack(ControlContext::Type::block,labelId);
 		}
 		void loop(ControlStructureImm imm)
 		{
 			string += "\nloop";
 			std::string labelId = printControlLabel("loop");
-			printControlSignature(imm.resultType);
+			printControlSignature(imm.type);
 			pushControlStack(ControlContext::Type::loop,labelId);
 		}
 		void if_(ControlStructureImm imm)
 		{
 			string += "\nif";
 			std::string labelId = printControlLabel("if");
-			printControlSignature(imm.resultType);
+			printControlSignature(imm.type);
 			pushControlStack(ControlContext::Type::ifThen,labelId);
 		}
 		void else_(NoImm imm)
@@ -285,7 +311,7 @@ namespace WAST
 		{
 			string += "\nbr_table" INDENT_STRING;
 			enum { numTargetsPerLine = 16 };
-			assert(imm.branchTableIndex < functionDef.branchTables.size());
+			wavmAssert(imm.branchTableIndex < functionDef.branchTables.size());
 			const std::vector<U32>& targetDepths = functionDef.branchTables[imm.branchTableIndex];
 			for(Uptr targetIndex = 0;targetIndex < targetDepths.size();++targetIndex)
 			{
@@ -343,14 +369,10 @@ namespace WAST
 			string += "\ncall_indirect (type " + moduleContext.names.types[imm.type.index] + ')';
 		}
 	
-		void printControlSignature(ResultType resultType)
+		void printControlSignature(IndexedBlockType indexedSignature)
 		{
-			if(resultType != ResultType::none)
-			{
-				string += " (result ";
-				print(string,resultType);
-				string += ')';
-			}
+			FunctionType signature = resolveBlockType(module, indexedSignature);
+			print(string, signature);
 		}
 
 		void printImm(NoImm) {}
@@ -405,7 +427,7 @@ namespace WAST
 				string += " offset=";
 				string += std::to_string(imm.offset);
 			}
-			assert(imm.alignmentLog2 == naturalAlignmentLog2);
+			wavmAssert(imm.alignmentLog2 == naturalAlignmentLog2);
 		}
 
 		void printImm(ThrowImm) {}
@@ -415,7 +437,7 @@ namespace WAST
 		{
 			string += "\ntry";
 			pushControlStack(ControlContext::Type::try_,"try");
-			printControlSignature(imm.resultType);
+			printControlSignature(imm.type);
 		}
 		void catch_(CatchImm imm)
 		{
@@ -435,7 +457,7 @@ namespace WAST
 		#define PRINT_OP(opcode,name,nameString,Imm,printOperands,requiredFeature) \
 			void name(Imm imm) \
 			{ \
-				assert(module.featureSpec.requiredFeature); \
+				wavmAssert(module.featureSpec.requiredFeature); \
 				string += "\n" nameString; \
 				printImm(imm); \
 			}
@@ -655,7 +677,7 @@ namespace WAST
 		{
 			const Uptr functionIndex = module.functions.imports.size() + functionDefIndex;
 			const FunctionDef& functionDef = module.functions.defs[functionDefIndex];
-			const FunctionType* functionType = module.types[functionDef.type.index];
+			FunctionType functionType = module.types[functionDef.type.index];
 			FunctionPrintContext functionContext(*this,functionDefIndex);
 		
 			string += "\n\n";
@@ -670,26 +692,29 @@ namespace WAST
 			string += ')';
 
 			// Print the function parameters.
-			if(functionType->parameters.size())
+			if(functionType.params().size())
 			{
-				for(Uptr parameterIndex = 0;parameterIndex < functionType->parameters.size();++parameterIndex)
+				for(Uptr parameterIndex = 0;parameterIndex < functionType.params().size();++parameterIndex)
 				{
 					string += '\n';
 					ScopedTagPrinter paramTag(string,"param");
 					string += ' ';
 					string += functionContext.localNames[parameterIndex];
 					string += ' ';
-					print(string,functionType->parameters[parameterIndex]);
+					print(string,functionType.params()[parameterIndex]);
 				}
 			}
 
 			// Print the function return type.
-			if(functionType->ret != ResultType::none)
+			if(functionType.results().size())
 			{
 				string += '\n';
 				ScopedTagPrinter resultTag(string,"result");
-				string += ' ';
-				print(string,functionType->ret);
+				for(Uptr resultIndex = 0;resultIndex < functionType.results().size();++resultIndex)
+				{
+					string += ' ';
+					print(string, functionType.results()[resultIndex]);
+				}
 			}
 
 			// Print the function's locals.
@@ -698,7 +723,7 @@ namespace WAST
 				string += '\n';
 				ScopedTagPrinter localTag(string,"local");
 				string += ' ';
-				string += functionContext.localNames[functionType->parameters.size() + localIndex];
+				string += functionContext.localNames[functionType.params().size() + localIndex];
 				string += ' ';
 				print(string,functionDef.nonParameterLocalTypes[localIndex]);
 			}
@@ -724,221 +749,327 @@ namespace WAST
 					string += "\"";
 				}
 				if(userSection.name == "linking")
-				{	
-					// Print a comment that describes the contents of the linking section.
-					std::string linkingSectionString;
-					Uptr indentDepth = 1;
-					linkingSectionString += "\n(; linking section:" INDENT_STRING;
-					try
-					{
-						MemoryInputStream stream(userSection.data.data(),userSection.data.size());
-
-						enum class LinkingSubsectionType
-						{
-							invalid = 0,
-							symbolInfo = 2,
-							dataSize = 3,
-							segmentInfo = 5,
-							initFuncs = 6,
-							comdatInfo = 7,
-						};
-
-						enum class COMDATKind
-						{
-							data = 0,
-							function = 1,
-						};
-
-						while(stream.capacity())
-						{
-							U8 subsectionType = (U8)LinkingSubsectionType::invalid;
-							serializeVarUInt7(stream,subsectionType);
-
-							Uptr numSubsectionBytes = 0;
-							serializeVarUInt32(stream,numSubsectionBytes);
-
-							MemoryInputStream substream(stream.advance(numSubsectionBytes),numSubsectionBytes);
-							switch((LinkingSubsectionType)subsectionType)
-							{
-							case LinkingSubsectionType::symbolInfo:
-							{
-								linkingSectionString += "\nSymbols:" INDENT_STRING;
-								++indentDepth;
-
-								Uptr numSymbols = 0;
-								serializeVarUInt32(substream,numSymbols);
-								for(Uptr symbolIndex = 0;symbolIndex < numSymbols;++symbolIndex)
-								{
-									std::string symbolName;
-									serialize(substream,symbolName);
-								
-									U32 flags = 0;
-									serializeVarUInt32(substream,flags);
-
-									linkingSectionString += "\n";
-									linkingSectionString += symbolName;
-
-									if(flags & 1) { linkingSectionString += " *WEAK*"; flags &= ~1; }
-									if(flags & 2) { linkingSectionString += " *LOCAL*"; flags &= ~2; }
-									if(flags & 4) { linkingSectionString += " *HIDDEN*"; flags &= ~4; }
-									if(flags) { linkingSectionString += " OtherFlags=" + std::to_string(flags); }
-								}
-
-								linkingSectionString += DEDENT_STRING;
-								--indentDepth;
-								break;
-							}
-							case LinkingSubsectionType::dataSize:
-							{
-								Uptr dataSize = 0;
-								serializeVarUInt32(substream,dataSize);
-								linkingSectionString += "\nDataSize: " + std::to_string(dataSize);
-								break;
-							}
-							case LinkingSubsectionType::segmentInfo:
-							{
-								linkingSectionString += "\nSegments:" INDENT_STRING;
-								++indentDepth;
-
-								Uptr numSegments = 0;
-								serializeVarUInt32(substream,numSegments);
-								for(Uptr segmentIndex = 0;segmentIndex < numSegments;++segmentIndex)
-								{
-									std::string segmentName;
-									serialize(substream,segmentName);
-
-									Uptr alignment = 0;
-									Uptr flags = 0;
-									serializeVarUInt32(substream,alignment);
-									serializeVarUInt32(substream,flags);
-
-									linkingSectionString += "\n";
-									linkingSectionString += segmentName;
-									linkingSectionString += " alignment=" + std::to_string(1<<alignment);
-									linkingSectionString += " flags=" + std::to_string(flags);
-								}
-
-								linkingSectionString += DEDENT_STRING;
-								--indentDepth;
-								break;
-							}
-							case LinkingSubsectionType::initFuncs:
-							{
-								linkingSectionString += "\nInit funcs:" INDENT_STRING;
-								++indentDepth;
-
-								Uptr numInitFuncs = 0;
-								serializeVarUInt32(substream,numInitFuncs);
-								for(Uptr initFuncIndex = 0;initFuncIndex < numInitFuncs;++initFuncIndex)
-								{
-									Uptr priority = 0;
-									Uptr functionIndex = 0;
-									serializeVarUInt32(substream,priority);
-									serializeVarUInt32(substream,functionIndex);
-
-									linkingSectionString += "\n";
-									linkingSectionString += "PRIORITY=" + std::to_string(priority);
-									if(functionIndex < names.functions.size())
-									{
-										linkingSectionString += ' ' + names.functions[functionIndex].name;
-									}
-									else
-									{
-										linkingSectionString += " <invalid function index " + std::to_string(functionIndex) + ">";
-									}
-								}
-
-								linkingSectionString += DEDENT_STRING;
-								--indentDepth;
-								break;
-							}
-							case LinkingSubsectionType::comdatInfo:
-							{
-								linkingSectionString += "\nComdats:" INDENT_STRING;
-								++indentDepth;
-
-								Uptr numComdats = 0;
-								serializeVarUInt32(substream,numComdats);
-								for(Uptr comdatIndex = 0; comdatIndex < numComdats; ++comdatIndex)
-								{
-									std::string comdatName;
-									serialize(substream,comdatName);
-
-									U32 flags = 0;
-									serializeVarUInt32(substream,flags);
-
-									linkingSectionString += "\n";
-									linkingSectionString += comdatName;
-
-									if(flags) { linkingSectionString += " OtherFlags=" + std::to_string(flags); }
-
-									linkingSectionString += INDENT_STRING;
-									++indentDepth;
-
-									Uptr numSymbols = 0;
-									serializeVarUInt32(substream,numSymbols);
-									for(Uptr symbolIndex = 0; symbolIndex < numSymbols; ++symbolIndex)
-									{
-										U32 kind = 0;
-										U32 index = 0;
-										serializeVarUInt32(substream,kind);
-										serializeVarUInt32(substream,index);
-
-										linkingSectionString += "\nSymbol: ";
-										switch((COMDATKind)kind)
-										{
-										case COMDATKind::data:
-											linkingSectionString += "data segment ";
-											linkingSectionString += std::to_string(index);
-											break;
-										case COMDATKind::function:
-											linkingSectionString += "function ";
-											if(index >= names.functions.size())
-											{
-												linkingSectionString += "Invalid COMDAT function index " + std::to_string(index);
-												throw FatalSerializationException("Invalid COMDAT function index");
-											}
-											linkingSectionString += names.functions[index].name;
-											break;
-										default:
-											linkingSectionString += "\nUnknown comdat kind: " + std::to_string(kind);
-											throw FatalSerializationException("Unknown COMDAT kind");
-											break;
-										};
-
-									}
-
-									linkingSectionString += DEDENT_STRING;
-									--indentDepth;
-								}
-
-								linkingSectionString += DEDENT_STRING;
-								--indentDepth;
-								break;
-							}
-							default:
-								linkingSectionString += "\nUnknown WASM linking subsection type: " + std::to_string(subsectionType);
-								throw FatalSerializationException("Unknown linking subsection type");
-								break;
-							};
-						};
-					}
-					catch(FatalSerializationException)
-					{
-						linkingSectionString += "\nFatal serialization exception!";
-						while(indentDepth > 1)
-						{
-							linkingSectionString += DEDENT_STRING;
-							--indentDepth;
-						};
-					}
-					assert(indentDepth == 1);
-					linkingSectionString += DEDENT_STRING "\n;)";
-
-					string += linkingSectionString;
+				{
+					printLinkingSection(userSection);
 				}
 			}
 		}
+	}
+
+	void ModulePrintContext::printLinkingSection(const IR::UserSection& linkingSection)
+	{
+		enum class LinkingSubsectionType
+		{
+			invalid = 0,
+			segmentInfo = 5,
+			initFuncs = 6,
+			comdatInfo = 7,
+			symbolTable = 8,
+		};
+
+		enum class COMDATKind
+		{
+			data = 0,
+			function = 1,
+			global = 2,
+		};
+
+		enum class SymbolKind
+		{
+			function = 0,
+			data = 1,
+			global = 2,
+			section = 3,
+		};
+
+		// Print a comment that describes the contents of the linking section.
+		std::string linkingSectionString;
+		Uptr indentDepth = 1;
+		linkingSectionString += "\n(; linking section:" INDENT_STRING;
+		try
+		{
+			MemoryInputStream stream(linkingSection.data.data(), linkingSection.data.size());
+
+			U32 version = 1;
+			serializeVarUInt32(stream, version);
+			linkingSectionString += "\nVersion: " + std::to_string(version);
+
+			while(stream.capacity())
+			{
+				U8 subsectionType = (U8)LinkingSubsectionType::invalid;
+				serializeNativeValue(stream,subsectionType);
+
+				Uptr numSubsectionBytes = 0;
+				serializeVarUInt32(stream,numSubsectionBytes);
+
+				MemoryInputStream substream(stream.advance(numSubsectionBytes),numSubsectionBytes);
+				switch((LinkingSubsectionType)subsectionType)
+				{
+				case LinkingSubsectionType::segmentInfo:
+				{
+					linkingSectionString += "\nSegments:" INDENT_STRING;
+					++indentDepth;
+
+					Uptr numSegments = 0;
+					serializeVarUInt32(substream,numSegments);
+					for(Uptr segmentIndex = 0;segmentIndex < numSegments;++segmentIndex)
+					{
+						std::string segmentName;
+						serialize(substream,segmentName);
+
+						Uptr alignment = 0;
+						Uptr flags = 0;
+						serializeVarUInt32(substream,alignment);
+						serializeVarUInt32(substream,flags);
+
+						linkingSectionString += "\n";
+						linkingSectionString += segmentName;
+						linkingSectionString += " alignment=" + std::to_string(1<<alignment);
+						linkingSectionString += " flags=" + std::to_string(flags);
+					}
+
+					linkingSectionString += DEDENT_STRING;
+					--indentDepth;
+					break;
+				}
+				case LinkingSubsectionType::initFuncs:
+				{
+					linkingSectionString += "\nInit funcs:" INDENT_STRING;
+					++indentDepth;
+
+					Uptr numInitFuncs = 0;
+					serializeVarUInt32(substream,numInitFuncs);
+					for(Uptr initFuncIndex = 0;initFuncIndex < numInitFuncs;++initFuncIndex)
+					{
+						Uptr functionIndex = 0;
+						serializeVarUInt32(substream,functionIndex);
+
+						linkingSectionString += "\n";
+						if(functionIndex < names.functions.size())
+						{
+							linkingSectionString += ' ' + names.functions[functionIndex].name;
+						}
+						else
+						{
+							linkingSectionString += " <invalid function index " + std::to_string(functionIndex) + ">";
+						}
+					}
+
+					linkingSectionString += DEDENT_STRING;
+					--indentDepth;
+					break;
+				}
+				case LinkingSubsectionType::comdatInfo:
+				{
+					linkingSectionString += "\nComdats:" INDENT_STRING;
+					++indentDepth;
+
+					Uptr numComdats = 0;
+					serializeVarUInt32(substream,numComdats);
+					for(Uptr comdatIndex = 0; comdatIndex < numComdats; ++comdatIndex)
+					{
+						std::string comdatName;
+						serialize(substream,comdatName);
+
+						U32 flags = 0;
+						serializeVarUInt32(substream,flags);
+
+						linkingSectionString += "\n";
+						linkingSectionString += comdatName;
+
+						if(flags) { linkingSectionString += " OtherFlags=" + std::to_string(flags); }
+
+						linkingSectionString += INDENT_STRING;
+						++indentDepth;
+
+						Uptr numSymbols = 0;
+						serializeVarUInt32(substream,numSymbols);
+						for(Uptr symbolIndex = 0; symbolIndex < numSymbols; ++symbolIndex)
+						{
+							U32 kind = 0;
+							U32 index = 0;
+							serializeVarUInt32(substream,kind);
+							serializeVarUInt32(substream,index);
+
+							linkingSectionString += "\nSymbol: ";
+							switch((COMDATKind)kind)
+							{
+							case COMDATKind::data:
+								linkingSectionString += "data segment ";
+								linkingSectionString += std::to_string(index);
+								break;
+							case COMDATKind::function:
+								linkingSectionString += "function ";
+								if(index >= names.functions.size())
+								{
+									linkingSectionString += "Invalid COMDAT function index " + std::to_string(index);
+									throw FatalSerializationException("Invalid COMDAT function index");
+								}
+								linkingSectionString += names.functions[index].name;
+								break;
+							case COMDATKind::global:
+								linkingSectionString += "global ";
+								if(index >= names.globals.size())
+								{
+									linkingSectionString += "Invalid COMDAT global index " + std::to_string(index);
+									throw FatalSerializationException("Invalid COMDAT global index");
+								}
+								linkingSectionString += names.globals[index];
+								break;
+							default:
+								linkingSectionString += "\nUnknown comdat kind: " + std::to_string(kind);
+								throw FatalSerializationException("Unknown COMDAT kind");
+								break;
+							};
+
+						}
+
+						linkingSectionString += DEDENT_STRING;
+						--indentDepth;
+					}
+
+					linkingSectionString += DEDENT_STRING;
+					--indentDepth;
+					break;
+				}
+				case LinkingSubsectionType::symbolTable:
+				{
+					linkingSectionString += "\nSymbols:" INDENT_STRING;
+					++indentDepth;
+
+					Uptr numSymbols = 0;
+					serializeVarUInt32(substream,numSymbols);
+					for(Uptr symbolIndex = 0;symbolIndex < numSymbols;++symbolIndex)
+					{
+						U8 kind = 0;
+						serializeNativeValue(substream, kind);
+
+						U32 flags = 0;
+						serializeVarUInt32(substream, flags);
+
+						const char* kindName = nullptr;
+						std::string symbolName;
+						U32 index = 0;
+						U32 offset = 0;
+						U32 numBytes = 0;
+
+						switch(SymbolKind(kind))
+						{
+						case SymbolKind::function:
+						{
+							kindName = "function ";
+							serializeVarUInt32(substream, index);
+							if(index < module.functions.imports.size())
+							{
+								symbolName = module.functions.imports[index].moduleName
+									+ "." + module.functions.imports[index].exportName;
+							}
+							else
+							{
+								serialize(substream, symbolName);
+							}
+							break;
+						}
+						case SymbolKind::global:
+						{
+							kindName = "global ";
+							serializeVarUInt32(substream, index);
+							if(index < module.globals.imports.size())
+							{
+								symbolName = module.globals.imports[index].moduleName
+									+ "." + module.globals.imports[index].exportName;
+							}
+							else
+							{
+								serialize(substream, symbolName);
+							}
+							break;
+						}
+						case SymbolKind::data:
+						{
+							kindName = "data ";
+							serialize(substream, symbolName);
+							serializeVarUInt32(substream, index);
+							serializeVarUInt32(substream, offset);
+							serializeVarUInt32(substream, numBytes);
+							break;
+						}
+						case SymbolKind::section:
+						{
+							kindName = "section ";
+							serializeVarUInt32(substream, index);
+
+							if(index < module.userSections.size())
+							{
+								symbolName = module.userSections[index].name;
+							}
+							else
+							{
+								symbolName = "*invalid index*";
+							}
+
+							break;
+						}
+						default:
+							linkingSectionString += "\nUnknown symbol kind: " + std::to_string(kind);
+							throw FatalSerializationException("Unknown symbol kind");
+						};
+
+						linkingSectionString += "\n";
+						linkingSectionString += kindName;
+						linkingSectionString += symbolName;
+
+						switch(SymbolKind(kind))
+						{
+						case SymbolKind::function:
+							linkingSectionString += " " + names.functions[index].name;
+							break;
+						case SymbolKind::global:
+							linkingSectionString += " " + names.globals[index];
+							break;
+						case SymbolKind::data:
+						case SymbolKind::section:
+							linkingSectionString += " index=" + std::to_string(index);
+							break;
+						}
+
+						if(SymbolKind(kind) == SymbolKind::data)
+						{
+							linkingSectionString += " offset=" + std::to_string(offset);
+							linkingSectionString += " size=" + std::to_string(numBytes);
+						}
+
+						if(flags & 1)  { linkingSectionString += " *WEAK*"; flags &= ~1; }
+						if(flags & 2)  { linkingSectionString += " *LOCAL*"; flags &= ~2; }
+						if(flags & 4)  { linkingSectionString += " *HIDDEN*"; flags &= ~4; }
+						if(flags & 16) { linkingSectionString += " *UNDEFINED*"; flags &= ~16; }
+						if(flags) { linkingSectionString += " OtherFlags=" + std::to_string(flags); }
+					}
+
+					linkingSectionString += DEDENT_STRING;
+					--indentDepth;
+					break;
+				}
+				default:
+					linkingSectionString += "\nUnknown WASM linking subsection type: " + std::to_string(subsectionType);
+					throw FatalSerializationException("Unknown linking subsection type");
+					break;
+				};
+			};
+		}
+		catch(FatalSerializationException)
+		{
+			linkingSectionString += "\nFatal serialization exception!";
+			while(indentDepth > 1)
+			{
+				linkingSectionString += DEDENT_STRING;
+				--indentDepth;
+			};
+		}
+		wavmAssert(indentDepth == 1);
+		linkingSectionString += DEDENT_STRING "\n;)";
+
+		string += linkingSectionString;
 	}
 
 	void FunctionPrintContext::printFunctionBody()

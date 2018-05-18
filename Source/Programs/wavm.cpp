@@ -1,6 +1,7 @@
 #include "CLI.h"
 #include "Emscripten/Emscripten.h"
 #include "Inline/BasicTypes.h"
+#include "Inline/HashMap.h"
 #include "Inline/Timing.h"
 #include "IR/Module.h"
 #include "IR/Operators.h"
@@ -11,30 +12,28 @@
 #include "ThreadTest/ThreadTest.h"
 #include "WAST/WAST.h"
 
-#include <map>
-
 using namespace IR;
 using namespace Runtime;
 
 struct RootResolver : Resolver
 {
 	Compartment* compartment;
-	std::map<std::string,ModuleInstance*> moduleNameToInstanceMap;
+	HashMap<std::string,ModuleInstance*> moduleNameToInstanceMap;
 
 	RootResolver(Compartment* inCompartment): compartment(inCompartment) {}
 
 	bool resolve(const std::string& moduleName,const std::string& exportName,ObjectType type,Object*& outObject) override
 	{
-		auto namedInstanceIt = moduleNameToInstanceMap.find(moduleName);
-		if(namedInstanceIt != moduleNameToInstanceMap.end())
+		auto namedInstance = moduleNameToInstanceMap.get(moduleName);
+		if(namedInstance)
 		{
-			outObject = getInstanceExport(namedInstanceIt->second,exportName);
+			outObject = getInstanceExport(*namedInstance,exportName);
 			if(outObject)
 			{
 				if(isA(outObject,type)) { return true; }
 				else
 				{
-					Log::printf(Log::Category::error,"Resolved import %s.%s to a %s, but was expecting %s",
+					Log::printf(Log::Category::error,"Resolved import %s.%s to a %s, but was expecting %s\n",
 						moduleName.c_str(),
 						exportName.c_str(),
 						asString(getObjectType(outObject)).c_str(),
@@ -45,11 +44,11 @@ struct RootResolver : Resolver
 		}
 
 		Log::printf(Log::Category::error,"Generated stub for missing import %s.%s : %s\n",moduleName.c_str(),exportName.c_str(),asString(type).c_str());
-		outObject = getStubObject(type);
+		outObject = getStubObject(exportName, type);
 		return true;
 	}
 
-	Object* getStubObject(ObjectType type) const
+	Object* getStubObject(const std::string& exportName, ObjectType type) const
 	{
 		// If the import couldn't be resolved, stub it in.
 		switch(type.kind)
@@ -68,12 +67,12 @@ struct RootResolver : Resolver
 			stubModule.types.push_back(asFunctionType(type));
 			stubModule.functions.defs.push_back({{0},{},std::move(codeStream.getBytes()),{}});
 			stubModule.exports.push_back({"importStub",IR::ObjectKind::function,0});
-			stubModuleNames.functions.push_back({"importStub <" + asString(type) + ">",{},{}});
+			stubModuleNames.functions.push_back({"importStub: " + exportName,{},{}});
 			IR::setDisassemblyNames(stubModule,stubModuleNames);
 			IR::validateDefinitions(stubModule);
 
 			// Instantiate the module and return the stub function instance.
-			auto stubModuleInstance = instantiateModule(compartment,stubModule,{});
+			auto stubModuleInstance = instantiateModule(compartment,stubModule,{},"importStub");
 			return getInstanceExport(stubModuleInstance,"importStub");
 		}
 		case IR::ObjectKind::memory:
@@ -89,11 +88,11 @@ struct RootResolver : Resolver
 			return asObject(Runtime::createGlobal(
 				compartment,
 				asGlobalType(type),
-				Runtime::Value(asGlobalType(type).valueType,Runtime::UntaggedValue())));
+				IR::Value(asGlobalType(type).valueType,IR::UntaggedValue())));
 		}
 		case IR::ObjectKind::exceptionType:
 		{
-			return asObject(Runtime::createExceptionTypeInstance(asExceptionTypeType(type)));
+			return asObject(Runtime::createExceptionTypeInstance(asExceptionType(type), "importStub"));
 		}
 		default: Errors::unreachable();
 		};
@@ -132,16 +131,19 @@ static int run(const CommandLineOptions& options)
 	Emscripten::Instance* emscriptenInstance = nullptr;
 	if(options.enableEmscripten)
 	{
-		emscriptenInstance = Emscripten::instantiate(compartment);
-		rootResolver.moduleNameToInstanceMap["env"] = emscriptenInstance->env;
-		rootResolver.moduleNameToInstanceMap["asm2wasm"] = emscriptenInstance->asm2wasm;
-		rootResolver.moduleNameToInstanceMap["global"] = emscriptenInstance->global;
+		emscriptenInstance = Emscripten::instantiate(compartment, module);
+		if(emscriptenInstance)
+		{
+			rootResolver.moduleNameToInstanceMap.set("env", emscriptenInstance->env);
+			rootResolver.moduleNameToInstanceMap.set("asm2wasm", emscriptenInstance->asm2wasm);
+			rootResolver.moduleNameToInstanceMap.set("global", emscriptenInstance->global);
+		}
 	}
 
 	if(options.enableThreadTest)
 	{
 		ModuleInstance* threadTestInstance = ThreadTest::instantiate(compartment);
-		rootResolver.moduleNameToInstanceMap["threadTest"] = threadTestInstance;
+		rootResolver.moduleNameToInstanceMap.set("threadTest", threadTestInstance);
 	}
 
 	LinkResult linkResult = linkModule(module,rootResolver);
@@ -158,7 +160,11 @@ static int run(const CommandLineOptions& options)
 	}
 
 	// Instantiate the module.
-	ModuleInstance* moduleInstance = instantiateModule(compartment,module,std::move(linkResult.resolvedImports));
+	ModuleInstance* moduleInstance = instantiateModule(
+		compartment,
+		module,
+		std::move(linkResult.resolvedImports),
+		options.filename);
 	if(!moduleInstance) { return EXIT_FAILURE; }
 
 	// Call the module start function, if it has one.
@@ -195,13 +201,13 @@ static int run(const CommandLineOptions& options)
 			return EXIT_FAILURE;
 		}
 	}
-	const FunctionType* functionType = getFunctionType(functionInstance);
+	FunctionType functionType = getFunctionType(functionInstance);
 
 	// Set up the arguments for the invoke.
 	std::vector<Value> invokeArgs;
 	if(!options.functionName)
 	{
-		if(functionType->parameters.size() == 2)
+		if(functionType.params().size() == 2)
 		{
 			MemoryInstance* defaultMemory = Runtime::getDefaultMemory(moduleInstance);
 			if(!defaultMemory)
@@ -217,9 +223,9 @@ static int run(const CommandLineOptions& options)
 
 			Emscripten::injectCommandArgs(emscriptenInstance,argStrings,invokeArgs);
 		}
-		else if(functionType->parameters.size() > 0)
+		else if(functionType.params().size() > 0)
 		{
-			std::cerr << "WebAssembly function requires " << functionType->parameters.size() << " argument(s), but only 0 or 2 can be passed!" << std::endl;
+			std::cerr << "WebAssembly function requires " << functionType.params().size() << " argument(s), but only 0 or 2 can be passed!" << std::endl;
 			return EXIT_FAILURE;
 		}
 	}
@@ -228,7 +234,7 @@ static int run(const CommandLineOptions& options)
 		for(U32 i = 0; options.args[i]; ++i)
 		{
 			Value value;
-			switch(functionType->parameters[i])
+			switch(functionType.params()[i])
 			{
 			case ValueType::i32: value = (U32)atoi(options.args[i]); break;
 			case ValueType::i64: value = (U64)atol(options.args[i]); break;
@@ -242,7 +248,7 @@ static int run(const CommandLineOptions& options)
 
 	// Invoke the function.
 	Timing::Timer executionTimer;
-	Result functionResult = invokeFunctionChecked(context,functionInstance,invokeArgs);
+	IR::ValueTuple functionResults = invokeFunctionChecked(context, functionInstance, invokeArgs);
 	Timing::logTimer("Invoked function",executionTimer);
 
 	if(options.functionName)
@@ -251,10 +257,14 @@ static int run(const CommandLineOptions& options)
 			Log::Category::debug,
 			"%s returned: %s\n",
 			options.functionName,
-			asString(functionResult).c_str());
+			asString(functionResults).c_str());
 		return EXIT_SUCCESS;
 	}
-	else if(functionResult.type == ResultType::i32) { return functionResult.i32; }
+	else if(functionResults.size() == 1
+		&& functionResults[0].type == ValueType::i32)
+	{
+		return functionResults[0].i32;
+	}
 	else { return EXIT_SUCCESS; }
 }
 

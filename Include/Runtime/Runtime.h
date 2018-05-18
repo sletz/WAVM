@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "IR/TaggedValue.h"
 #include "IR/Types.h"
@@ -23,7 +24,7 @@ namespace Runtime
 		table = 1,
 		memory = 2,
 		global = 3,
-		exceptionType = 4,
+		exceptionTypeInstance = 4,
 
 		// Runtime-specific object kinds that are only used by transient runtime objects.
 		module = 5,
@@ -57,7 +58,7 @@ namespace Runtime
 		struct Type; \
 		inline Type* as##kindName(Object* object) \
 		{ \
-			assert(!object || object->kind == kindId); \
+			wavmAssert(!object || object->kind == kindId); \
 			return (Type*)object; \
 		} \
 		inline Type* as##kindName##Nullable(Object* object) \
@@ -72,7 +73,7 @@ namespace Runtime
 	DECLARE_OBJECT_TYPE(ObjectKind::memory,Memory,MemoryInstance);
 	DECLARE_OBJECT_TYPE(ObjectKind::global,Global,GlobalInstance);
 	DECLARE_OBJECT_TYPE(ObjectKind::module,Module,ModuleInstance);
-	DECLARE_OBJECT_TYPE(ObjectKind::exceptionType,ExceptionType,ExceptionTypeInstance);
+	DECLARE_OBJECT_TYPE(ObjectKind::exceptionTypeInstance,ExceptionTypeInstance,ExceptionTypeInstance);
 	DECLARE_OBJECT_TYPE(ObjectKind::context,Context,Context);
 	DECLARE_OBJECT_TYPE(ObjectKind::compartment,Compartment,Compartment);
 
@@ -163,13 +164,16 @@ namespace Runtime
 		RUNTIME_API static const GCPointer<ExceptionTypeInstance> misalignedAtomicMemoryAccessType;
 		RUNTIME_API static const GCPointer<ExceptionTypeInstance> invalidArgumentType;
 
-		GCPointer<ExceptionTypeInstance> type;
-		std::vector<UntaggedValue> arguments;
+		GCPointer<ExceptionTypeInstance> typeInstance;
+		std::vector<IR::UntaggedValue> arguments;
 		Platform::CallStack callStack;
 	};
 
 	// Creates an exception type instance.
-	RUNTIME_API ExceptionTypeInstance* createExceptionTypeInstance(const IR::TupleType* parameters);
+	RUNTIME_API ExceptionTypeInstance* createExceptionTypeInstance(
+		IR::ExceptionType type,
+		std::string&& debugName
+		);
 
 	// Returns a string that describes the given exception cause.
 	RUNTIME_API std::string describeException(const Exception& exception);
@@ -178,10 +182,13 @@ namespace Runtime
 	RUNTIME_API std::string describeExceptionType(const ExceptionTypeInstance* type);
 
 	// Returns the parameter types for an exception type instance.
-	RUNTIME_API const IR::TupleType* getExceptionTypeParameters(const ExceptionTypeInstance* type);
+	RUNTIME_API IR::TypeTuple getExceptionTypeParameters(const ExceptionTypeInstance* type);
 
 	// Throws a runtime exception.
-	[[noreturn]] RUNTIME_API void throwException(ExceptionTypeInstance* type,std::vector<UntaggedValue>&& arguments = {});
+	[[noreturn]] RUNTIME_API void throwException(
+		ExceptionTypeInstance* type,
+		std::vector<IR::UntaggedValue>&& arguments = {}
+		);
 
 	// Calls a thunk and catches any runtime exceptions that occur within it.
 	RUNTIME_API void catchRuntimeExceptions(
@@ -210,17 +217,22 @@ namespace Runtime
 	// to an untagged value that is stored in the Context that will be overwritten by subsequent calls to
 	// invokeFunctionUnchecked. This allows using this function in a call stack that will be forked, since returning
 	// the result as a value will be lowered to passing in a pointer to stack memory for most calling conventions.
-	RUNTIME_API UntaggedValue* invokeFunctionUnchecked(Context* context,FunctionInstance* function,const UntaggedValue* arguments);
+	RUNTIME_API IR::UntaggedValue* invokeFunctionUnchecked(
+		Context* context,
+		FunctionInstance* function,
+		const IR::UntaggedValue* arguments
+		);
 
 	// Like invokeFunctionUnchecked, but returns a result tagged with its type, and takes arguments as tagged values.
 	// If the wrong number or types or arguments are provided, a runtime exception is thrown.
-	RUNTIME_API Result invokeFunctionChecked(
+	RUNTIME_API IR::ValueTuple invokeFunctionChecked(
 		Context* context,
 		FunctionInstance* function,
-		const std::vector<Value>& arguments);
+		const std::vector<IR::Value>& arguments
+		);
 
 	// Returns the type of a FunctionInstance.
-	RUNTIME_API const IR::FunctionType* getFunctionType(FunctionInstance* function);
+	RUNTIME_API IR::FunctionType getFunctionType(FunctionInstance* function);
 
 	//
 	// Tables
@@ -265,6 +277,9 @@ namespace Runtime
 	RUNTIME_API Iptr growMemory(MemoryInstance* memory,Uptr numPages);
 	RUNTIME_API Iptr shrinkMemory(MemoryInstance* memory,Uptr numPages);
 
+	// Unmaps a range of memory pages within the memory's address-space.
+	RUNTIME_API void unmapMemoryPages(MemoryInstance* memory, Uptr pageIndex, Uptr numPages);
+
 	// Validates that an offset range is wholly inside a Memory's virtual address range.
 	RUNTIME_API U8* getValidatedMemoryOffsetRange(MemoryInstance* memory,Uptr offset,Uptr numBytes);
 	
@@ -281,15 +296,15 @@ namespace Runtime
 	//
 
 	// Creates a GlobalInstance with the specified type and initial value.
-	RUNTIME_API GlobalInstance* createGlobal(Compartment* compartment,IR::GlobalType type,Value initialValue);
+	RUNTIME_API GlobalInstance* createGlobal(Compartment* compartment,IR::GlobalType type,IR::Value initialValue);
 
 	RUNTIME_API GlobalInstance* cloneGlobal(GlobalInstance* global,Compartment* newCompartment);
 
 	// Reads the current value of a global.
-	RUNTIME_API Value getGlobalValue(Context* context,GlobalInstance* global);
+	RUNTIME_API IR::Value getGlobalValue(Context* context,GlobalInstance* global);
 
 	// Writes a new value to a global, and returns the previous value.
-	RUNTIME_API Value setGlobalValue(Context* context,GlobalInstance* global,Value newValue);
+	RUNTIME_API IR::Value setGlobalValue(Context* context,GlobalInstance* global,IR::Value newValue);
 
 	//
 	// Modules
@@ -305,7 +320,12 @@ namespace Runtime
 	};
 
 	// Instantiates a module, bindings its imports to the specified objects. May throw InstantiationException.
-	RUNTIME_API ModuleInstance* instantiateModule(Compartment* compartment,const IR::Module& module,ImportBindings&& imports);
+	RUNTIME_API ModuleInstance* instantiateModule(
+		Compartment* compartment,
+		const IR::Module& module,
+		ImportBindings&& imports,
+		std::string&& debugName
+		);
 
 	// Gets the start function of a ModuleInstance.
 	RUNTIME_API FunctionInstance* getStartFunction(ModuleInstance* moduleInstance);

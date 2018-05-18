@@ -1,5 +1,6 @@
 #if _WIN32
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Errors.h"
 #include "Inline/Unicode.h"
@@ -8,7 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <inttypes.h>
-#include <map>
+#include <memory>
 
 #define NOMINMAX
 #include <Windows.h>
@@ -65,8 +66,7 @@ extern "C" U8* getStackPointer();
 
 namespace Platform
 {
-	// Defined in WindowsThreads.cpp
-	extern void initThread();
+	void initThread();
 
 	static Uptr internalGetPreferredVirtualPageSizeLog2()
 	{
@@ -88,11 +88,11 @@ namespace Platform
 		switch(access)
 		{
 		default:
-		case MemoryAccess::None: return PAGE_NOACCESS;
-		case MemoryAccess::ReadOnly: return PAGE_READONLY;
-		case MemoryAccess::ReadWrite: return PAGE_READWRITE;
-		case MemoryAccess::Execute: return PAGE_EXECUTE_READ;
-		case MemoryAccess::ReadWriteExecute: return PAGE_EXECUTE_READWRITE;
+		case MemoryAccess::none: return PAGE_NOACCESS;
+		case MemoryAccess::readOnly: return PAGE_READONLY;
+		case MemoryAccess::readWrite: return PAGE_READWRITE;
+		case MemoryAccess::execute: return PAGE_EXECUTE_READ;
+		case MemoryAccess::readWriteExecute: return PAGE_EXECUTE_READWRITE;
 		}
 	}
 
@@ -191,6 +191,32 @@ namespace Platform
 		if(unalignedBaseAddress && !result) { Errors::fatal("VirtualFree(MEM_RELEASE) failed"); }
 	}
 
+	Mutex& getErrorReportingMutex()
+	{
+		static Platform::Mutex mutex;
+		return mutex;
+	}
+
+	void handleFatalError(const char* messageFormat,va_list varArgs)
+	{
+		Lock lock(getErrorReportingMutex());
+		std::vfprintf(stderr,messageFormat,varArgs);
+		std::fflush(stderr);
+		std::abort();
+	}
+
+	void handleAssertionFailure(const AssertMetadata& metadata)
+	{
+		Lock lock(getErrorReportingMutex());
+		std::fprintf(
+			stderr,
+			"Assertion failed at %s(%u): %s\n",
+			metadata.file,
+			metadata.line,
+			metadata.condition
+			);
+	}
+
 	// The interface to the DbgHelp DLL
 	struct DbgHelp
 	{
@@ -199,7 +225,7 @@ namespace Platform
 
 		static DbgHelp* get()
 		{
-			static Platform::Mutex* dbgHelpMutex = Platform::createMutex();
+			static Platform::Mutex dbgHelpMutex;
 			static DbgHelp* dbgHelp = nullptr;
 			if(!dbgHelp)
 			{
@@ -232,6 +258,41 @@ namespace Platform
 		}
 	};
 
+	static HMODULE getCurrentModule()
+	{
+		HMODULE module = nullptr;
+		GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)getCurrentModule, &module);
+		return module;
+	}
+
+	static HMODULE getModuleFromBaseAddress(Uptr baseAddress)
+	{
+		return reinterpret_cast<HMODULE>(baseAddress);
+	}
+
+	static std::string getModuleName(HMODULE module)
+	{
+		char moduleFilename[MAX_PATH+1];
+		U32 moduleFilenameResult = GetModuleFileNameA(module, moduleFilename, MAX_PATH+1);
+		return std::string(moduleFilename,moduleFilenameResult);
+	}
+
+	static std::string trimModuleName(std::string moduleName)
+	{
+		const std::string thisModuleName = getModuleName(getCurrentModule());
+		Uptr lastBackslashOffset = thisModuleName.find_last_of("\\");
+		if(lastBackslashOffset != UINTPTR_MAX
+			&& moduleName.size() >= lastBackslashOffset
+			&& moduleName.substr(0,lastBackslashOffset) == thisModuleName.substr(0,lastBackslashOffset))
+		{
+			return moduleName.substr(lastBackslashOffset + 1);
+		}
+		else
+		{
+			return moduleName;
+		}
+	}
+
 	bool describeInstructionPointer(Uptr ip,std::string& outDescription)
 	{
 		// Initialize DbgHelp.
@@ -246,10 +307,15 @@ namespace Platform
 		symbolInfo->MaxNameLen = maxSymbolNameChars;
 
 		// Call DbgHelp::SymFromAddr to try to find any debug symbol containing this address.
-		if(!dbgHelp->symFromAddr(GetCurrentProcess(),ip,nullptr,symbolInfo)) { return false; }
+		U64 displacement;
+		if(!dbgHelp->symFromAddr(GetCurrentProcess(),ip,&displacement,symbolInfo)) { return false; }
 		else
 		{
-			outDescription = symbolInfo->Name;
+			outDescription = "host!";
+			outDescription += trimModuleName(getModuleName(getModuleFromBaseAddress(symbolInfo->ModBase)));
+			outDescription += '!';
+			outDescription += std::string(symbolInfo->Name, symbolInfo->NameLen);
+			outDescription += '+' + std::to_string(displacement);
 			return true;
 		}
 	}
@@ -272,7 +338,7 @@ namespace Platform
 		}
 	#endif
 	
-	static CallStack unwindStack(const CONTEXT& immutableContext)
+	static CallStack unwindStack(const CONTEXT& immutableContext, Uptr numOmittedFramesFromTop)
 	{
 		// Make a mutable copy of the context.
 		CONTEXT context;
@@ -283,7 +349,14 @@ namespace Platform
 		#ifdef _WIN64
 		while(context.Rip)
 		{
-			callStack.stackFrames.push_back({context.Rip});
+			if(numOmittedFramesFromTop)
+			{
+				--numOmittedFramesFromTop;
+			}
+			else
+			{
+				callStack.stackFrames.push_back({context.Rip});
+			}
 
 			// Look up the SEH unwind information for this function.
 			U64 imageBase;
@@ -323,13 +396,14 @@ namespace Platform
 		RtlCaptureContext(&context);
 
 		// Unwind the stack.
-		CallStack result = unwindStack(context);
+		return unwindStack(context, numOmittedFramesFromTop + 1);
+	}
 
-		// Remote the requested number of omitted frames, +1 for this function.
-		const Uptr numOmittedFrames = std::min(result.stackFrames.size(),numOmittedFramesFromTop + 1);
-		result.stackFrames.erase(result.stackFrames.begin(),result.stackFrames.begin() + numOmittedFrames);
-
-		return result;
+	void registerEHFrames(U8* ehFrames, Uptr numBytes)
+	{
+	}
+	void deregisterEHFrames(U8* ehFrames, Uptr numBytes)
+	{
 	}
 
 	static bool translateSEHToSignal(EXCEPTION_POINTERS* exceptionPointers,Signal& outSignal)
@@ -361,7 +435,7 @@ namespace Platform
 		else
 		{
 			// Unwind the stack frames from the context of the exception.
-			CallStack callStack = unwindStack(*exceptionPointers->ContextRecord);
+			CallStack callStack = unwindStack(*exceptionPointers->ContextRecord, 0);
 
 			if(filter(signal,callStack)) { return EXCEPTION_EXECUTE_HANDLER; }
 			else { return EXCEPTION_CONTINUE_SEARCH; }
@@ -417,7 +491,7 @@ namespace Platform
 		}
 
 		// Unwind the stack frames from the context of the exception.
-		CallStack callStack = unwindStack(*exceptionPointers->ContextRecord);
+		CallStack callStack = unwindStack(*exceptionPointers->ContextRecord, 0);
 
 		(signalHandler.load())(signal,callStack);
 
@@ -454,7 +528,7 @@ namespace Platform
 			outExceptionData = reinterpret_cast<void*>(exceptionPointers->ExceptionRecord->ExceptionInformation[0]);
 
 			// Unwind the stack frames from the context of the exception.
-			outCallStack = new CallStack(unwindStack(*exceptionPointers->ContextRecord));
+			outCallStack = new CallStack(unwindStack(*exceptionPointers->ContextRecord, 0));
 			return EXCEPTION_EXECUTE_HANDLER;
 		}
 	}
@@ -476,7 +550,7 @@ namespace Platform
 			handler(exceptionData,*callStack);
 
 			delete callStack;
-			if(exceptionData) { delete [] (U8*)exceptionData; }
+			if(exceptionData) { free(exceptionData); }
 
 			return true;
 		}
@@ -488,11 +562,6 @@ namespace Platform
 		RaiseException(U32(SEH_WAVM_EXCEPTION),0,1,arguments);
 		Errors::unreachable();
 	}
-
-	struct Mutex
-	{
-		CRITICAL_SECTION criticalSection;
-	};
 
 	struct Thread
 	{
@@ -613,7 +682,7 @@ namespace Platform
 
 	void detachThread(Thread* thread)
 	{
-		assert(thread);
+		wavmAssert(thread);
 		thread->releaseRef();
 	}
 
@@ -731,8 +800,8 @@ namespace Platform
 				const Uptr* source = (const Uptr*)minActiveStackAddr;
 				const Uptr* sourceEnd = (const Uptr*)maxActiveStackAddr;
 				Uptr* dest = (Uptr*)(forkedStackMaxAddr - numActiveStackBytes);
-				assert(!(reinterpret_cast<Uptr>(source) & 7));
-				assert(!(reinterpret_cast<Uptr>(dest) & 7));
+				wavmAssert(!(reinterpret_cast<Uptr>(source) & 7));
+				wavmAssert(!(reinterpret_cast<Uptr>(dest) & 7));
 				while(source < sourceEnd)
 				{
 					if(*source >= reinterpret_cast<Uptr>(minStackAddr)
@@ -754,7 +823,7 @@ namespace Platform
 
 			// Compute the offset to add to stack pointers to translate them to the forked thread's stack.
 			const Iptr forkedStackOffset = forkedStackMaxAddr - maxActiveStackAddr;
-			assert(!(forkedStackOffset & 15));
+			wavmAssert(!(forkedStackOffset & 15));
 
 			// Translate this thread's captured stack and frame pointers to the forked stack.
 			forkThreadArgs->forkContext.rsp += forkedStackOffset;
@@ -782,32 +851,26 @@ namespace Platform
 			: performanceCounter.QuadPart * (wavmFrequency / performanceCounterFrequency.QuadPart);
 	}
 
-	Mutex* createMutex()
+	Mutex::Mutex()
 	{
-		auto mutex = new Mutex();
-		InitializeCriticalSection(&mutex->criticalSection);
-		return mutex;
+		static_assert(sizeof(criticalSection) == sizeof(CRITICAL_SECTION), "");
+		static_assert(alignof(CriticalSection) >= alignof(CRITICAL_SECTION), "");
+		InitializeCriticalSection((CRITICAL_SECTION*)&criticalSection);
 	}
 
-	void destroyMutex(Mutex* mutex)
+	Mutex::~Mutex()
 	{
-		DeleteCriticalSection(&mutex->criticalSection);
-		delete mutex;
+		DeleteCriticalSection((CRITICAL_SECTION*)&criticalSection);
 	}
 
-	Lock::Lock(Mutex* inMutex)
-		: mutex(inMutex)
+	void Mutex::lock()
 	{
-		EnterCriticalSection(&mutex->criticalSection);
+		EnterCriticalSection((CRITICAL_SECTION*)&criticalSection);
 	}
 
-	void Lock::unlock()
+	void Mutex::unlock()
 	{
-		if(mutex)
-		{
-			LeaveCriticalSection(&mutex->criticalSection);
-			mutex = nullptr;
-		}
+		LeaveCriticalSection((CRITICAL_SECTION*)&criticalSection);
 	}
 
 	Event* createEvent()
@@ -922,37 +985,52 @@ namespace Platform
 		return fileHandleToPointer(GetStdHandle(StdHandle));
 	}
 
-	bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64& outAbsoluteOffset)
+	bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64* outAbsoluteOffset)
 	{
 		LONG offsetHigh = LONG((offset >> 32) & 0xffffffff);
 		LONG result = SetFilePointer(filePointerToHandle(file),U32(offset & 0xffffffff),&offsetHigh,DWORD(origin));
 		if(result == INVALID_SET_FILE_POINTER) { return false; }
-		outAbsoluteOffset = (U64(offsetHigh) << 32) | result;
+		if(outAbsoluteOffset)
+		{
+			*outAbsoluteOffset = (U64(offsetHigh) << 32) | result;
+		}
 		return true;
 	}
 
-	bool readFile(File* file, U8* outData,Uptr numBytes,Uptr& outNumBytesRead)
+	bool readFile(File* file, U8* outData,Uptr numBytes,Uptr* outNumBytesRead)
 	{
-		outNumBytesRead = 0;
+		if(outNumBytesRead)
+		{
+			*outNumBytesRead = 0;
+		}
 		if(numBytes > Uptr(UINT32_MAX)) { return false; }
 
 		DWORD windowsNumBytesRead = 0;
 		const BOOL result = ReadFile(filePointerToHandle(file),outData,U32(numBytes),&windowsNumBytesRead,nullptr);
-
-		outNumBytesRead = Uptr(windowsNumBytesRead);
+		
+		if(outNumBytesRead)
+		{
+			*outNumBytesRead = Uptr(windowsNumBytesRead);
+		}
 
 		return result != 0;
 	}
 
-	bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr& outNumBytesWritten)
+	bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr* outNumBytesWritten)
 	{
-		outNumBytesWritten = 0;
+		if(outNumBytesWritten)
+		{
+			*outNumBytesWritten = 0;
+		}
 		if(numBytes > Uptr(UINT32_MAX)) { return false; }
 
 		DWORD windowsNumBytesWritten = 0;
 		const BOOL result = WriteFile(filePointerToHandle(file),data, U32(numBytes),&windowsNumBytesWritten,nullptr);
-
-		outNumBytesWritten = Uptr(windowsNumBytesWritten);
+		
+		if(outNumBytesWritten)
+		{
+			*outNumBytesWritten = Uptr(windowsNumBytesWritten);
+		}
 
 		return result != 0;
 	}

@@ -2,7 +2,6 @@
 
 #include "Inline/BasicTypes.h"
 
-#include <assert.h>
 #include <functional>
 #include <string>
 #include <vector>
@@ -15,6 +14,8 @@
 	#define PACKED_STRUCT(definition) __pragma(pack(push, 1)) definition; __pragma(pack(pop))
 	#define NO_ASAN
 	#define RETURNS_TWICE
+	#define UNLIKELY(condition) (condition)
+	#define DEBUG_TRAP() __debugbreak()
 #else
 	#define FORCEINLINE inline __attribute__((always_inline))
 	#define FORCENOINLINE __attribute__((noinline))
@@ -22,6 +23,8 @@
 	#define PACKED_STRUCT(definition) definition __attribute__((packed));
 	#define NO_ASAN __attribute__((no_sanitize_address))
 	#define RETURNS_TWICE __attribute__((returns_twice))
+	#define UNLIKELY(condition) __builtin_expect(condition,0)
+	#define DEBUG_TRAP() __asm__ __volatile__ ("int3")
 #endif
 
 #ifndef PLATFORM_API
@@ -30,6 +33,9 @@
 
 namespace Platform
 {
+	// The number of bytes in a cache line: assume 64 for now.
+	enum { numCacheLineBytes = 64 };
+
 	// countLeadingZeroes/countTrailingZeroes returns the number of leading/trailing zeroes, or the bit width of the input if no bits are set.
 	#ifdef _WIN32
 		// BitScanReverse/BitScanForward return 0 if the input is 0.
@@ -52,8 +58,8 @@ namespace Platform
 	#endif
 	inline U64 floorLogTwo(U64 value) { return value <= 1 ? 0 : 63 - countLeadingZeroes(value); }
 	inline U32 floorLogTwo(U32 value) { return value <= 1 ? 0 : 31 - countLeadingZeroes(value); }
-	inline U64 ceilLogTwo(U64 value) { return floorLogTwo(value * 2 - 1); }
-	inline U32 ceilLogTwo(U32 value) { return floorLogTwo(value * 2 - 1); }
+	inline U64 ceilLogTwo(U64 value) { return value <= 1 ? 0 : 63 - countLeadingZeroes(value * 2 - 1); }
+	inline U32 ceilLogTwo(U32 value) { return value <= 1 ? 0 : 31 - countLeadingZeroes(value * 2 - 1); }
 
 	inline U64 saturateToBounds(U64 value,U64 maxValue)
 	{
@@ -72,11 +78,11 @@ namespace Platform
 	// Describes allowed memory accesses.
 	enum class MemoryAccess
 	{
-		None,
-		ReadOnly,
-		ReadWrite,
-		Execute,
-		ReadWriteExecute
+		none,
+		readOnly,
+		readWrite,
+		execute,
+		readWriteExecute
 	};
 
 	// Returns the base 2 logarithm of the smallest virtual page size.
@@ -93,7 +99,7 @@ namespace Platform
 	// Commits physical memory to the specified virtual pages.
 	// baseVirtualAddress must be a multiple of the preferred page size.
 	// Return true if successful, or false if physical memory has been exhausted.
-	PLATFORM_API bool commitVirtualPages(U8* baseVirtualAddress,Uptr numPages,MemoryAccess access = MemoryAccess::ReadWrite);
+	PLATFORM_API bool commitVirtualPages(U8* baseVirtualAddress,Uptr numPages,MemoryAccess access = MemoryAccess::readWrite);
 
 	// Changes the allowed access to the specified virtual pages.
 	// baseVirtualAddress must be a multiple of the preferred page size.
@@ -111,6 +117,20 @@ namespace Platform
 	// Frees an aligned virtual address block. Any physical memory committed to the addresses must have already been decommitted.
 	// unalignedBaseAddress must be the unaligned base address returned by allocateAlignedVirtualPages.
 	PLATFORM_API void freeAlignedVirtualPages(U8* unalignedBaseAddress,Uptr numPages,Uptr alignmentLog2);
+
+	//
+	// Error reporting
+	//
+
+	PACKED_STRUCT(struct AssertMetadata
+	{
+		const char* condition;
+		const char* file;
+		U32 line;
+	});
+
+	PLATFORM_API void handleAssertionFailure(const AssertMetadata& metadata);
+	[[noreturn]] PLATFORM_API void handleFatalError(const char* messageFormat,va_list varArgs);
 
 	//
 	// Call stack and exceptions
@@ -137,6 +157,9 @@ namespace Platform
 		PLATFORM_API void registerSEHUnwindInfo(Uptr imageLoadAddress,Uptr pdataAddress,Uptr pdataNumBytes);
 		PLATFORM_API void deregisterSEHUnwindInfo(Uptr pdataAddress);
 	#endif
+
+	PLATFORM_API void registerEHFrames(U8* ehFrames, Uptr numBytes);
+	PLATFORM_API void deregisterEHFrames(U8* ehFrames, Uptr numBytes);
 
 	struct Signal
 	{
@@ -207,17 +230,60 @@ namespace Platform
 	PLATFORM_API U64 getMonotonicClock();
 
 	// Platform-independent mutexes.
-	struct Mutex;
-	PLATFORM_API Mutex* createMutex();
-	PLATFORM_API void destroyMutex(Mutex* mutex);
+	struct Mutex
+	{
+		PLATFORM_API Mutex();
+		PLATFORM_API ~Mutex();
+
+		Mutex(const Mutex&) = delete;
+		Mutex(Mutex&&) = delete;
+
+		void operator=(const Mutex&) = delete;
+		void operator=(Mutex&&) = delete;
+
+		PLATFORM_API void lock();
+		PLATFORM_API void unlock();
+
+	private:
+		#ifdef WIN32
+		struct CriticalSection
+		{
+			struct _RTL_CRITICAL_SECTION_DEBUG* debugInfo;
+			I32 lockCount;
+			I32 recursionCount;
+			Uptr owningThreadHandle;
+			Uptr lockSemaphoreHandle;
+			Uptr spinCount;
+		} criticalSection;
+		#elif defined(__linux__)
+		struct PthreadMutex
+		{
+			Uptr data[5];
+		} pthreadMutex;
+		#elif defined(__APPLE__)
+		struct PthreadMutex
+		{
+			Uptr data[8];
+		} pthreadMutex;
+		#else
+			#error unsupported platform
+		#endif
+	};
 
 	// RAII-style lock for Mutex.
 	struct Lock
 	{
-		PLATFORM_API Lock(Mutex* inMutex);
+		Lock(Mutex& inMutex): mutex(&inMutex) { mutex->lock(); }
 		~Lock() { unlock(); }
 
-		PLATFORM_API void unlock();
+		void unlock()
+		{
+			if(mutex)
+			{
+				mutex->unlock();
+				mutex = nullptr;
+			}
+		}
 
 	private:
 		Mutex* mutex;
@@ -268,9 +334,9 @@ namespace Platform
 	PLATFORM_API File* openFile(const std::string& pathName,FileAccessMode accessMode,FileCreateMode createMode);
 	PLATFORM_API bool closeFile(File* file);
 	PLATFORM_API File* getStdFile(StdDevice device);
-	PLATFORM_API bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64& outAbsoluteOffset);
-	PLATFORM_API bool readFile(File* file,U8* outData,Uptr numBytes,Uptr& outNumBytesRead);
-	PLATFORM_API bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr& outNumBytesWritten);
+	PLATFORM_API bool seekFile(File* file,I64 offset,FileSeekOrigin origin,U64* outAbsoluteOffset = nullptr);
+	PLATFORM_API bool readFile(File* file,U8* outData,Uptr numBytes,Uptr* outNumBytesRead = nullptr);
+	PLATFORM_API bool writeFile(File* file,const U8* data,Uptr numBytes,Uptr* outNumBytesWritten = nullptr);
 	PLATFORM_API bool flushFileWrites(File* file);
 	PLATFORM_API std::string getCurrentWorkingDirectory();
 }

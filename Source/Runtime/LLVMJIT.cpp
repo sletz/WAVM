@@ -1,5 +1,7 @@
 #include "LLVMJIT.h"
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
+#include "Inline/HashMap.h"
 #include "Inline/Timing.h"
 #include "Logging/Logging.h"
 #include "RuntimePrivate.h"
@@ -34,10 +36,10 @@
 
 namespace LLVMJIT
 {
-	Platform::Mutex* llvmMutex = Platform::createMutex();
+	Platform::Mutex llvmMutex;
 	llvm::LLVMContext* llvmContext = nullptr;
 	llvm::TargetMachine* targetMachine = nullptr;
-	llvm::Type* llvmResultTypes[(Uptr)ResultType::num];
+	llvm::Type* llvmValueTypes[(Uptr)ValueType::num];
 	llvm::JITEventListener* gdbRegistrationListener = nullptr;
 
 	llvm::Type* llvmI8Type;
@@ -64,14 +66,14 @@ namespace LLVMJIT
 	llvm::Constant* typedZeroConstants[(Uptr)ValueType::num];
 	
 	// A map from address to loaded JIT symbols.
-	Platform::Mutex* addressToSymbolMapMutex = Platform::createMutex();
+	Platform::Mutex addressToSymbolMapMutex;
 	std::map<Uptr,struct JITSymbol*> addressToSymbolMap;
 
 	// A map from function types to JIT symbols for cached invoke thunks (C++ -> WASM)
-	std::map<const FunctionType*,struct JITSymbol*> invokeThunkTypeToSymbolMap;
+	HashMap<FunctionType,struct JITSymbol*> invokeThunkTypeToSymbolMap;
 
 	// A map from function types to JIT symbols for cached native thunks (WASM -> C++)
-	std::map<void*,struct JITSymbol*> intrinsicFunctionToThunkSymbolMap;
+	HashMap<void*,struct JITSymbol*> intrinsicFunctionToThunkSymbolMap;
 
 	void initLLVM();
 
@@ -87,7 +89,7 @@ namespace LLVMJIT
 		union
 		{
 			FunctionInstance* functionInstance;
-			const FunctionType* invokeThunkType;
+			FunctionType invokeThunkType;
 		};
 		Uptr baseAddress;
 		Uptr numBytes;
@@ -96,7 +98,7 @@ namespace LLVMJIT
 		JITSymbol(FunctionInstance* inFunctionInstance,Uptr inBaseAddress,Uptr inNumBytes,std::map<U32,U32>&& inOffsetToOpIndexMap)
 		: type(Type::functionInstance), functionInstance(inFunctionInstance), baseAddress(inBaseAddress), numBytes(inNumBytes), offsetToOpIndexMap(inOffsetToOpIndexMap) {}
 
-		JITSymbol(const FunctionType* inInvokeThunkType,Uptr inBaseAddress,Uptr inNumBytes,std::map<U32,U32>&& inOffsetToOpIndexMap)
+		JITSymbol(FunctionType inInvokeThunkType,Uptr inBaseAddress,Uptr inNumBytes,std::map<U32,U32>&& inOffsetToOpIndexMap)
 		: type(Type::invokeThunk), invokeThunkType(inInvokeThunkType), baseAddress(inBaseAddress), numBytes(inNumBytes), offsetToOpIndexMap(inOffsetToOpIndexMap) {}
 	};
 
@@ -114,27 +116,26 @@ namespace LLVMJIT
 		virtual ~UnitMemoryManager() override
 		{
 			// Deregister the exception handling frame info.
-			if(hasRegisteredEHFrames)
-			{
-				hasRegisteredEHFrames = false;
-				deregisterEHFrames();
-			}
+			deregisterEHFrames();
 
 			// Decommit the image pages, but leave them reserved to catch any references to them that might erroneously remain.
 			Platform::decommitVirtualPages(imageBaseAddress,numAllocatedImagePages);
 		}
 		
-		void registerEHFrames(U8* addr, U64 loadAddr,uintptr_t numBytes) override
+		void registerEHFrames(U8* addr, U64 loadAddr, uintptr_t numBytes) override
 		{
-			llvm::RTDyldMemoryManager::registerEHFrames(addr,loadAddr,numBytes);
+			Platform::registerEHFrames(addr, numBytes);
 			hasRegisteredEHFrames = true;
 			ehFramesAddr = addr;
-			ehFramesLoadAddr = loadAddr;
 			ehFramesNumBytes = numBytes;
 		}
 		void deregisterEHFrames() override
 		{
-			llvm::RTDyldMemoryManager::deregisterEHFrames();
+			if(hasRegisteredEHFrames)
+			{
+				hasRegisteredEHFrames = false;
+				Platform::deregisterEHFrames(ehFramesAddr, ehFramesNumBytes);
+			}
 		}
 		
 		virtual bool needsToReserveAllocationSpace() override { return true; }
@@ -168,21 +169,19 @@ namespace LLVMJIT
 		}
 		virtual bool finalizeMemory(std::string* ErrMsg = nullptr) override
 		{
-			assert(!isFinalized);
-			isFinalized = true;
-			// Set the requested final memory access for each section's pages.
-			#if 0
-			const Platform::MemoryAccess codeAccess = USE_WRITEABLE_JIT_CODE_PAGES ? Platform::MemoryAccess::ReadWriteExecute : Platform::MemoryAccess::Execute;
-			if(codeSection.numPages && !Platform::setVirtualPageAccess(codeSection.baseAddress,codeSection.numPages,codeAccess)) { return false; }
-			if(readOnlySection.numPages && !Platform::setVirtualPageAccess(readOnlySection.baseAddress,readOnlySection.numPages,Platform::MemoryAccess::ReadOnly)) { return false; }
-			if(readWriteSection.numPages && !Platform::setVirtualPageAccess(readWriteSection.baseAddress,readWriteSection.numPages,Platform::MemoryAccess::ReadWrite)) { return false; }
-			#else
-			const Platform::MemoryAccess codeAccess = Platform::MemoryAccess::ReadWriteExecute;
-			if(codeSection.numPages && !Platform::setVirtualPageAccess(codeSection.baseAddress,codeSection.numPages,codeAccess)) { return false; }
-			if(readOnlySection.numPages && !Platform::setVirtualPageAccess(readOnlySection.baseAddress,readOnlySection.numPages,Platform::MemoryAccess::ReadWrite)) { return false; }
-			if(readWriteSection.numPages && !Platform::setVirtualPageAccess(readWriteSection.baseAddress,readWriteSection.numPages,Platform::MemoryAccess::ReadWrite)) { return false; }
-			#endif
+			// finalizeMemory is called before we manually apply SEH relocations, so don't do
+			// anything here and let the finalize callback call reallyFinalizeMemory when it's done
+			// applying the SEH relocations.
 			return true;
+		}
+		void reallyFinalizeMemory()
+		{
+			wavmAssert(!isFinalized);
+			isFinalized = true;
+			const Platform::MemoryAccess codeAccess = USE_WRITEABLE_JIT_CODE_PAGES ? Platform::MemoryAccess::readWriteExecute : Platform::MemoryAccess::execute;
+			if(codeSection.numPages) { errorUnless(Platform::setVirtualPageAccess(codeSection.baseAddress,codeSection.numPages,codeAccess)); }
+			if(readOnlySection.numPages) { errorUnless(Platform::setVirtualPageAccess(readOnlySection.baseAddress,readOnlySection.numPages,Platform::MemoryAccess::readOnly)); }
+			if(readWriteSection.numPages) { errorUnless(Platform::setVirtualPageAccess(readWriteSection.baseAddress,readWriteSection.numPages,Platform::MemoryAccess::readWrite)); }
 		}
 		virtual void invalidateInstructionCache()
 		{
@@ -210,18 +209,17 @@ namespace LLVMJIT
 
 		bool hasRegisteredEHFrames;
 		U8* ehFramesAddr;
-		U64 ehFramesLoadAddr;
 		Uptr ehFramesNumBytes;
 
 		U8* allocateBytes(Uptr numBytes,Uptr alignment,Section& section)
 		{
-			assert(section.baseAddress);
-			assert(!(alignment & (alignment - 1)));
-			assert(!isFinalized);
+			wavmAssert(section.baseAddress);
+			wavmAssert(!(alignment & (alignment - 1)));
+			wavmAssert(!isFinalized);
 			
 			// Allocate the section at the lowest uncommitted byte of image memory.
 			U8* allocationBaseAddress = section.baseAddress + align(section.numCommittedBytes,alignment);
-			assert(!(reinterpret_cast<Uptr>(allocationBaseAddress) & (alignment-1)));
+			wavmAssert(!(reinterpret_cast<Uptr>(allocationBaseAddress) & (alignment-1)));
 			section.numCommittedBytes = align(section.numCommittedBytes,alignment) + align(numBytes,alignment);
 
 			// Check that enough space was reserved in the section.
@@ -348,8 +346,8 @@ namespace LLVMJIT
 			Uptr functionDefIndex;
 			if(getFunctionIndexFromExternalName(name,functionDefIndex))
 			{
-				assert(moduleInstance);
-				assert(functionDefIndex < moduleInstance->functionDefs.size());
+				wavmAssert(moduleInstance);
+				wavmAssert(functionDefIndex < moduleInstance->functionDefs.size());
 				FunctionInstance* functionInstance = moduleInstance->functionDefs[functionDefIndex];
 				auto symbol = new JITSymbol(functionInstance,baseAddress,numBytes,std::move(offsetToOpIndexMap));
 				functionDefSymbols.push_back(symbol);
@@ -366,18 +364,18 @@ namespace LLVMJIT
 	// The JIT compilation unit for a single invoke thunk.
 	struct JITThunkUnit : JITUnit
 	{
-		const FunctionType* functionType;
+		FunctionType functionType;
 
 		JITSymbol* symbol;
 
-		JITThunkUnit(const FunctionType* inFunctionType): JITUnit(false), functionType(inFunctionType), symbol(nullptr) {}
+		JITThunkUnit(FunctionType inFunctionType): JITUnit(false), functionType(inFunctionType), symbol(nullptr) {}
 
 		void notifySymbolLoaded(const char* name,Uptr baseAddress,Uptr numBytes,std::map<U32,U32>&& offsetToOpIndexMap) override
 		{
 			#if (defined(_WIN32) && !defined(_WIN64))
-				assert(!strcmp(name,"_thunk"));
+				wavmAssert(!strcmp(name,"_thunk"));
 			#else
-				assert(!strcmp(name,"thunk"));
+				wavmAssert(!strcmp(name,"thunk"));
 			#endif
 			symbol = new JITSymbol(functionType,baseAddress,numBytes,std::move(offsetToOpIndexMap));
 		}
@@ -509,7 +507,7 @@ namespace LLVMJIT
 				sizeof(instructionBuffer)
 				);
 			if(numInstructionBytes == 0) { numInstructionBytes = 1; }
-			assert(numInstructionBytes <= numBytesRemaining);
+			wavmAssert(numInstructionBytes <= numBytesRemaining);
 			numBytesRemaining -= numInstructionBytes;
 			nextByte += numInstructionBytes;
 
@@ -552,7 +550,7 @@ namespace LLVMJIT
 				if(!address) { continue; }
 
 				// Compute the address the functions was loaded at.
-				assert(*address <= UINTPTR_MAX);
+				wavmAssert(*address <= UINTPTR_MAX);
 				Uptr loadedAddress = Uptr(*address);
 				auto symbolSection = symbol.getSection();
 				if(symbolSection)
@@ -574,14 +572,14 @@ namespace LLVMJIT
 				#endif
 
 				// Notify the JIT unit that the symbol was loaded.
-				assert(symbolSizePair.second <= UINTPTR_MAX);
+				wavmAssert(symbolSizePair.second <= UINTPTR_MAX);
 				jitUnit->notifySymbolLoaded(
-				name->data(), loadedAddress,
+					name->data(), loadedAddress,
 					Uptr(symbolSizePair.second),
 					std::move(offsetToOpIndexMap)
 					);
 			}
-		
+
 			#ifdef _WIN64
 			processSEHTables(
 				reinterpret_cast<Uptr>(jitUnit->memoryManager->getImageBaseAddress()),
@@ -595,6 +593,7 @@ namespace LLVMJIT
 			#endif
 		}
 
+		jitUnit->memoryManager->reallyFinalizeMemory();
 		jitUnit->loadedObjects.clear();
 	}
 
@@ -678,7 +677,7 @@ namespace LLVMJIT
 
 	std::string getExternalFunctionName(ModuleInstance* moduleInstance,Uptr functionDefIndex)
 	{
-		assert(functionDefIndex < moduleInstance->functionDefs.size());
+		wavmAssert(functionDefIndex < moduleInstance->functionDefs.size());
 		return "wasmFunc" + std::to_string(functionDefIndex)
 			+ "_" + moduleInstance->functionDefs[functionDefIndex]->debugName;
 	}
@@ -716,36 +715,44 @@ namespace LLVMJIT
 		switch(symbol->type)
 		{
 		case JITSymbol::Type::functionInstance:
-			outDescription = symbol->functionInstance->debugName;
-			if(!outDescription.size()) { outDescription = "<unnamed function>"; }
-			break;
+		{
+			outDescription = "wasm!";
+			outDescription += symbol->functionInstance->moduleInstance->debugName;
+			outDescription += '!';
+			outDescription += symbol->functionInstance->debugName;
+			outDescription += '+';
+			
+			// Find the highest entry in the offsetToOpIndexMap whose offset is <= the symbol-relative IP.
+			U32 ipOffset = (U32)(ip - symbol->baseAddress);
+			Iptr opIndex = -1;
+			for(auto offsetMapIt : symbol->offsetToOpIndexMap)
+			{
+				if(offsetMapIt.first <= ipOffset) { opIndex = offsetMapIt.second; }
+				else { break; }
+			}
+			outDescription += std::to_string(opIndex >= 0 ? opIndex : 0);
+
+			return true;
+		}
 		case JITSymbol::Type::invokeThunk:
-			outDescription = "<invoke thunk : " + asString(symbol->invokeThunkType) + ">";
-			break;
+			outDescription = "thnk!";
+			outDescription += asString(symbol->invokeThunkType);
+			outDescription += '+';
+			outDescription += std::to_string(ip - symbol->baseAddress);
+			return true;
 		default: Errors::unreachable();
 		};
-		
-		// Find the highest entry in the offsetToOpIndexMap whose offset is <= the symbol-relative IP.
-		U32 ipOffset = (U32)(ip - symbol->baseAddress);
-		Iptr opIndex = -1;
-		for(auto offsetMapIt : symbol->offsetToOpIndexMap)
-		{
-			if(offsetMapIt.first <= ipOffset) { opIndex = offsetMapIt.second; }
-			else { break; }
-		}
-		if(opIndex >= 0) { outDescription += " (op " + std::to_string(opIndex) + ")"; }
-		return true;
 	}
 
-	InvokeFunctionPointer getInvokeThunk(const FunctionType* functionType,CallingConvention callingConvention)
+	InvokeFunctionPointer getInvokeThunk(FunctionType functionType,CallingConvention callingConvention)
 	{
 		Platform::Lock llvmLock(llvmMutex);
 
 		initLLVM();
 
 		// Reuse cached invoke thunks for the same function type.
-		auto mapIt = invokeThunkTypeToSymbolMap.find(functionType);
-		if(mapIt != invokeThunkTypeToSymbolMap.end()) { return reinterpret_cast<InvokeFunctionPointer>(mapIt->second->baseAddress); }
+		JITSymbol*& invokeThunkSymbol = invokeThunkTypeToSymbolMap.getOrAdd(functionType,nullptr);
+		if(invokeThunkSymbol) { return reinterpret_cast<InvokeFunctionPointer>(invokeThunkSymbol->baseAddress); }
 
 		auto llvmModuleSharedPtr = std::make_shared<llvm::Module>("",*llvmContext);
 		auto llvmModule = llvmModuleSharedPtr.get();
@@ -769,9 +776,8 @@ namespace LLVMJIT
 		// Load the function's arguments from an array of 64-bit values at an address provided by the caller.
 		std::vector<llvm::Value*> arguments;
 		Uptr argDataOffset = 0;
-		for(Uptr parameterIndex = 0;parameterIndex < functionType->parameters.size();++parameterIndex)
+		for(ValueType parameterType : functionType.params())
 		{
-			ValueType parameterType = functionType->parameters[parameterIndex];
 			if(parameterType == ValueType::v128)
 			{
 				// Use 16-byte alignment for V128 arguments.
@@ -788,22 +794,37 @@ namespace LLVMJIT
 		}
 
 		// Call the function.
-		llvm::Value* result = emitContext.emitCallOrInvoke(functionPointer,arguments,functionType,callingConvention);
+		ValueVector results = emitContext.emitCallOrInvoke(
+			functionPointer,
+			arguments,
+			functionType,
+			callingConvention
+			);
 
 		// If the function has a return value, write it to the context invoke return memory.
-		if(functionType->ret != ResultType::none)
+		wavmAssert(results.size() == functionType.results().size());
+		auto newContextPointer = emitContext.irBuilder.CreateLoad(emitContext.contextPointerVariable);
+		Uptr resultOffset = 0;
+		for(Uptr resultIndex = 0;resultIndex < results.size();++resultIndex)
 		{
-			auto llvmResultType = asLLVMType(functionType->ret);
+			const ValueType resultType = functionType.results()[resultIndex];
+			const U8 resultNumBytes = getTypeByteWidth(resultType);
+
+			resultOffset = (resultOffset + resultNumBytes - 1) & -I8(resultNumBytes);
+			wavmAssert(resultOffset < maxThunkArgAndReturnBytes);
+
 			emitContext.irBuilder.CreateStore(
-				result,
+				results[resultIndex],
 				emitContext.irBuilder.CreatePointerCast(
 					emitContext.irBuilder.CreateInBoundsGEP(
-						emitContext.irBuilder.CreateLoad(emitContext.contextPointerVariable),
-						{emitLiteral(U64(offsetof(ContextRuntimeData,thunkArgAndReturnData)))}
+						newContextPointer,
+						{emitLiteral(resultOffset)}
 						),
-					llvmResultType->getPointerTo()
+					asLLVMType(resultType)->getPointerTo()
 					)
 				);
+			
+			resultOffset += resultNumBytes;
 		}
 
 		emitContext.irBuilder.CreateRet(emitContext.irBuilder.CreateLoad(emitContext.contextPointerVariable));
@@ -812,20 +833,20 @@ namespace LLVMJIT
 		auto jitUnit = new JITThunkUnit(functionType);
 		jitUnit->compile(llvmModuleSharedPtr);
 
-		assert(jitUnit->symbol);
-		invokeThunkTypeToSymbolMap[functionType] = jitUnit->symbol;
+		wavmAssert(jitUnit->symbol);
+		invokeThunkSymbol = jitUnit->symbol;
 
 		{
 			Platform::Lock addressToSymbolMapLock(addressToSymbolMapMutex);
 			addressToSymbolMap[jitUnit->symbol->baseAddress + jitUnit->symbol->numBytes] = jitUnit->symbol;
 		}
 
-		return reinterpret_cast<InvokeFunctionPointer>(jitUnit->symbol->baseAddress);
+		return reinterpret_cast<InvokeFunctionPointer>(invokeThunkSymbol->baseAddress);
 	}
 
-	void* getIntrinsicThunk(void* nativeFunction,const FunctionType* functionType,CallingConvention callingConvention)
+	void* getIntrinsicThunk(void* nativeFunction,FunctionType functionType,CallingConvention callingConvention)
 	{
-		assert(callingConvention == CallingConvention::intrinsic
+		wavmAssert(callingConvention == CallingConvention::intrinsic
 		|| callingConvention == CallingConvention::intrinsicWithContextSwitch
 		|| callingConvention == CallingConvention::intrinsicWithMemAndTable);
 
@@ -834,8 +855,8 @@ namespace LLVMJIT
 		initLLVM();
 
 		// Reuse cached intrinsic thunks for the same function type.
-		auto mapIt = intrinsicFunctionToThunkSymbolMap.find(nativeFunction);
-		if(mapIt != intrinsicFunctionToThunkSymbolMap.end()) { return reinterpret_cast<void*>(mapIt->second->baseAddress); }
+		JITSymbol*& intrinsicThunkSymbol = intrinsicFunctionToThunkSymbolMap.getOrAdd(nativeFunction, nullptr);
+		if(intrinsicThunkSymbol) { return reinterpret_cast<void*>(intrinsicThunkSymbol->baseAddress); }
 
 		// Create a LLVM module containing a single function with the same signature as the native
 		// function, but with the WASM calling convention.
@@ -861,32 +882,29 @@ namespace LLVMJIT
 
 		llvm::Type* llvmNativeFunctionType = asLLVMType(functionType,callingConvention)->getPointerTo();
 		llvm::Value* llvmNativeFunction = emitLiteralPointer(nativeFunction,llvmNativeFunctionType);
-		llvm::Value* result = emitContext.emitCallOrInvoke(llvmNativeFunction,args,functionType,callingConvention);
-
-		// Package the context pointer and result in a struct.
-		llvm::Value* thunkReturnStruct = getZeroedLLVMReturnStruct(functionType->ret);
-		llvm::Value* contextPointer = emitContext.irBuilder.CreateLoad(emitContext.contextPointerVariable);
-		thunkReturnStruct = emitContext.irBuilder.CreateInsertValue(thunkReturnStruct,contextPointer,{0});
-		if(functionType->ret != ResultType::none)
-		{
-			thunkReturnStruct = emitContext.irBuilder.CreateInsertValue(thunkReturnStruct,result,{1});
-		}
-
-		emitContext.irBuilder.CreateRet(thunkReturnStruct);
+		ValueVector results = emitContext.emitCallOrInvoke(
+			llvmNativeFunction,
+			args,
+			functionType,
+			callingConvention
+			);
+		
+		// Emit the function return.
+		emitContext.emitReturn(functionType.results(), results);
 
 		// Compile the LLVM IR to machine code.
 		auto jitUnit = new JITThunkUnit(functionType);
 		jitUnit->compile(llvmModuleSharedPtr);
 
-		assert(jitUnit->symbol);
-		intrinsicFunctionToThunkSymbolMap[nativeFunction] = jitUnit->symbol;
+		wavmAssert(jitUnit->symbol);
+		intrinsicThunkSymbol = jitUnit->symbol;
 
 		{
 			Platform::Lock addressToSymbolMapLock(addressToSymbolMapMutex);
 			addressToSymbolMap[jitUnit->symbol->baseAddress + jitUnit->symbol->numBytes] = jitUnit->symbol;
 		}
 
-		return reinterpret_cast<void*>(jitUnit->symbol->baseAddress);
+		return reinterpret_cast<void*>(intrinsicThunkSymbol->baseAddress);
 	}
 
 	void initLLVM()
@@ -960,12 +978,11 @@ namespace LLVMJIT
 		llvmF32x4Type = llvm::VectorType::get(llvmF32Type,4);
 		llvmF64x2Type = llvm::VectorType::get(llvmF64Type,2);
 
-		llvmResultTypes[(Uptr)ResultType::none] = llvm::Type::getVoidTy(*llvmContext);
-		llvmResultTypes[(Uptr)ResultType::i32] = llvmI32Type;
-		llvmResultTypes[(Uptr)ResultType::i64] = llvmI64Type;
-		llvmResultTypes[(Uptr)ResultType::f32] = llvmF32Type;
-		llvmResultTypes[(Uptr)ResultType::f64] = llvmF64Type;
-		llvmResultTypes[(Uptr)ResultType::v128] = llvmI64x2Type;
+		llvmValueTypes[(Uptr)ValueType::i32] = llvmI32Type;
+		llvmValueTypes[(Uptr)ValueType::i64] = llvmI64Type;
+		llvmValueTypes[(Uptr)ValueType::f32] = llvmF32Type;
+		llvmValueTypes[(Uptr)ValueType::f64] = llvmF64Type;
+		llvmValueTypes[(Uptr)ValueType::v128] = llvmI64x2Type;
 
 		// Create zero constants of each type.
 		typedZeroConstants[(Uptr)ValueType::any] = nullptr;

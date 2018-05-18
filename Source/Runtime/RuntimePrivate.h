@@ -1,11 +1,11 @@
 #pragma once
 
 #include "Inline/BasicTypes.h"
+#include "Inline/HashMap.h"
 #include "Runtime/Intrinsics.h"
 #include "Runtime/Runtime.h"
 
 #include <functional>
-#include <map>
 #include <atomic>
 
 namespace Intrinsics { struct Module; }
@@ -28,13 +28,13 @@ namespace LLVMJIT
 
 	// Generates an invoke thunk for a specific function type.
 	InvokeFunctionPointer getInvokeThunk(
-		const IR::FunctionType* functionType,
+		IR::FunctionType functionType,
 		Runtime::CallingConvention callingConvention);
 
 	// Generates a thunk to call a native function from generated code.
 	void* getIntrinsicThunk(
 		void* nativeFunction,
-		const IR::FunctionType* functionType,
+		IR::FunctionType functionType,
 		Runtime::CallingConvention callingConvention);
 }
 
@@ -57,23 +57,23 @@ namespace Runtime
 	struct FunctionInstance : ObjectImpl
 	{
 		ModuleInstance* moduleInstance;
-		const FunctionType* type;
+		FunctionType type;
 		void* nativeFunction;
 		CallingConvention callingConvention;
 		std::string debugName;
 
 		FunctionInstance(
 			ModuleInstance* inModuleInstance,
-			const FunctionType* inType,
-			void* inNativeFunction = nullptr,
-			CallingConvention inCallingConvention = CallingConvention::wasm,
-			const char* inDebugName = "<unidentified FunctionInstance>")
+			FunctionType inType,
+			void* inNativeFunction,
+			CallingConvention inCallingConvention,
+			std::string&& inDebugName)
 		: ObjectImpl(ObjectKind::function)
 		, moduleInstance(inModuleInstance)
 		, type(inType)
 		, nativeFunction(inNativeFunction)
 		, callingConvention(inCallingConvention)
-		, debugName(inDebugName)
+		, debugName(std::move(inDebugName))
 		{}
 	};
 
@@ -82,7 +82,7 @@ namespace Runtime
 	{
 		struct FunctionElement
 		{
-			const FunctionType* type;
+			FunctionType::Encoding typeEncoding;
 			void* value;
 		};
 
@@ -95,7 +95,7 @@ namespace Runtime
 		Uptr endOffset;
 
 		// The Objects corresponding to the FunctionElements at baseAddress.
-		Platform::Mutex* elementsMutex;
+		Platform::Mutex elementsMutex;
 		std::vector<Object*> elements;
 
 		TableInstance(Compartment* inCompartment,const TableType& inType)
@@ -105,7 +105,6 @@ namespace Runtime
 		, type(inType)
 		, baseAddress(nullptr)
 		, endOffset(0)
-		, elementsMutex(Platform::createMutex())
 		{}
 		~TableInstance() override;
 		virtual void finalize() override;
@@ -170,10 +169,13 @@ namespace Runtime
 	// An instance of a WebAssembly exception type.
 	struct ExceptionTypeInstance : ObjectImpl
 	{
-		const TupleType* parameters;
+		ExceptionType type;
+		std::string debugName;
 
-		ExceptionTypeInstance(const TupleType* inParameters)
-		: ObjectImpl(ObjectKind::exceptionType), parameters(inParameters)
+		ExceptionTypeInstance(ExceptionType inType, std::string&& inDebugName)
+		: ObjectImpl(ObjectKind::exceptionTypeInstance)
+		, type(inType)
+		, debugName(std::move(inDebugName))
 		{}
 	};
 
@@ -182,7 +184,7 @@ namespace Runtime
 	{
 		Compartment* compartment;
 
-		std::map<std::string,Object*> exportMap;
+		HashMap<std::string, Object*> exportMap;
 
 		std::vector<FunctionInstance*> functionDefs;
 
@@ -190,7 +192,7 @@ namespace Runtime
 		std::vector<TableInstance*> tables;
 		std::vector<MemoryInstance*> memories;
 		std::vector<GlobalInstance*> globals;
-		std::vector<ExceptionTypeInstance*> exceptionTypes;
+		std::vector<ExceptionTypeInstance*> exceptionTypeInstances;
 
 		FunctionInstance* startFunction;
 		MemoryInstance* defaultMemory;
@@ -198,13 +200,16 @@ namespace Runtime
 
 		LLVMJIT::JITModuleBase* jitModule;
 
+		std::string debugName;
+
 		ModuleInstance(
 			Compartment* inCompartment,
 			std::vector<FunctionInstance*>&& inFunctionImports,
 			std::vector<TableInstance*>&& inTableImports,
 			std::vector<MemoryInstance*>&& inMemoryImports,
 			std::vector<GlobalInstance*>&& inGlobalImports,
-			std::vector<ExceptionTypeInstance*>&& inExceptionTypeImports
+			std::vector<ExceptionTypeInstance*>&& inExceptionTypeInstanceImports,
+			std::string&& inDebugName
 			)
 		: ObjectImpl(ObjectKind::module)
 		, compartment(inCompartment)
@@ -212,11 +217,12 @@ namespace Runtime
 		, tables(inTableImports)
 		, memories(inMemoryImports)
 		, globals(inGlobalImports)
-		, exceptionTypes(inExceptionTypeImports)
+		, exceptionTypeInstances(inExceptionTypeInstanceImports)
 		, startFunction(nullptr)
 		, defaultMemory(nullptr)
 		, defaultTable(nullptr)
 		, jitModule(nullptr)
+		, debugName(std::move(inDebugName))
 		{}
 
 		~ModuleInstance() override;
@@ -239,16 +245,21 @@ namespace Runtime
 	};
 
 	#define compartmentReservedBytes (4ull * 1024 * 1024 * 1024)
-	enum { maxThunkArgAndReturnBytes = 128 };
+	enum { maxThunkArgAndReturnBytes = 256 };
 	enum { maxGlobalBytes = 4096 - maxThunkArgAndReturnBytes };
 	enum { maxMemories = 255 };
 	enum { maxTables = 256 };
 	enum { compartmentRuntimeDataAlignmentLog2 = 32 };
 	enum { contextRuntimeDataAlignment = 4096 };
 
+	static_assert(
+		sizeof(UntaggedValue) * IR::maxReturnValues <= maxThunkArgAndReturnBytes,
+		"maxThunkArgAndReturnBytes must be large enough to hold IR::maxReturnValues * sizeof(UntaggedValue)"
+		);
+
 	struct Compartment : ObjectImpl
 	{
-		Platform::Mutex* mutex;
+		Platform::Mutex mutex;
 
 		struct CompartmentRuntimeData* runtimeData;
 		U8* unalignedRuntimeData;

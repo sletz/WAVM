@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "IR.h"
 #include "Types.h"
@@ -34,7 +35,11 @@ namespace IR
 		InitializerExpression(I64 inI64): type(Type::i64_const), i64(inI64) {}
 		InitializerExpression(F32 inF32): type(Type::f32_const), f32(inF32) {}
 		InitializerExpression(F64 inF64): type(Type::f64_const), f64(inF64) {}
-		InitializerExpression(Type inType,Uptr inGlobalIndex): type(inType), globalIndex(inGlobalIndex) { assert(inType == Type::get_global); }
+		InitializerExpression(Type inType,Uptr inGlobalIndex)
+		: type(inType), globalIndex(inGlobalIndex)
+		{
+			wavmAssert(inType == Type::get_global);
+		}
 	};
 
 	// A function definition
@@ -68,7 +73,7 @@ namespace IR
 	// A tagged tuple type definition
 	struct ExceptionTypeDef
 	{
-		const TupleType* type;
+		ExceptionType type;
 	};
 
 	// Describes an object imported into a module or a specific type
@@ -84,7 +89,7 @@ namespace IR
 	typedef Import<TableType> TableImport;
 	typedef Import<MemoryType> MemoryImport;
 	typedef Import<GlobalType> GlobalImport;
-	typedef Import<const TupleType*> ExceptionTypeImport;
+	typedef Import<TypeTuple> ExceptionTypeImport;
 
 	// Describes an export from a module. The interpretation of index depends on kind
 	struct Export
@@ -137,13 +142,13 @@ namespace IR
 	{
 		FeatureSpec featureSpec;
 
-		std::vector<const FunctionType*> types;
+		std::vector<FunctionType> types;
 
 		IndexSpace<FunctionDef,IndexedFunctionType> functions;
 		IndexSpace<TableDef,TableType> tables;
 		IndexSpace<MemoryDef,MemoryType> memories;
 		IndexSpace<GlobalDef,GlobalType> globals;
-		IndexSpace<ExceptionTypeDef,const TupleType*> exceptionTypes;
+		IndexSpace<ExceptionTypeDef,ExceptionType> exceptionTypes;
 
 		std::vector<Export> exports;
 		std::vector<DataSegment> dataSegments;
@@ -167,6 +172,18 @@ namespace IR
 			}
 		}
 		return false;
+	}
+
+	// Resolve an indexed block type to a FunctionType.
+	inline FunctionType resolveBlockType(const Module& module, const IndexedBlockType& indexedType)
+	{
+		switch(indexedType.format)
+		{
+		case IndexedBlockType::noParametersOrResult: return FunctionType();
+		case IndexedBlockType::oneResult: return FunctionType(TypeTuple(indexedType.resultType));
+		case IndexedBlockType::functionType: return module.types[indexedType.index];
+		default: Errors::unreachable();
+		};
 	}
 
 	// Maps declarations in a module to names to use in disassembly.

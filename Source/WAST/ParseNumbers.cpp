@@ -1,3 +1,4 @@
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Floats.h"
 #include "WAST.h"
@@ -63,7 +64,7 @@ static bool parseSign(const char*& nextChar)
 static U64 parseHexUnsignedInt(const char*& nextChar,ParseState* parseState,U64 maxValue)
 {
 	const char* firstHexit = nextChar;
-	assert(nextChar[0] == '0' && (nextChar[1] == 'x' || nextChar[1] == 'X'));
+	wavmAssert(nextChar[0] == '0' && (nextChar[1] == 'x' || nextChar[1] == 'X'));
 	nextChar += 2;
 	
 	U64 result = 0;
@@ -79,7 +80,7 @@ static U64 parseHexUnsignedInt(const char*& nextChar,ParseState* parseState,U64 
 			while(tryParseHexit(nextChar,hexit)) {};
 			break;
 		}
-		assert(result * 16 + hexit >= result);
+		wavmAssert(result * 16 + hexit >= result);
 		result = result * 16 + hexit;
 	}
 	return result;
@@ -106,7 +107,7 @@ static U64 parseDecimalUnsignedInt(const char*& nextChar,ParseState* parseState,
 			while((*nextChar >= '0' && *nextChar <= '9') || *nextChar == '_') { ++nextChar; };
 			break;
 		}
-		assert(result * 10 + digit >= result);
+		wavmAssert(result * 10 + digit >= result);
 		result = result * 10 + digit;
 	};
 	return result;
@@ -122,7 +123,7 @@ Float parseNaN(const char*& nextChar,ParseState* parseState)
 	resultComponents.bits.sign = parseSign(nextChar) ? 1 : 0;
 	resultComponents.bits.exponent = FloatComponents::maxExponentBits;
 
-	assert(nextChar[0] == 'n'
+	wavmAssert(nextChar[0] == 'n'
 	&& nextChar[1] == 'a'
 	&& nextChar[2] == 'n');
 	nextChar += 3;
@@ -241,7 +242,7 @@ bool tryParseInt(CursorState* cursor,UnsignedInt& outUnsignedInt,I64 minSignedVa
 	outUnsignedInt = isNegative ? UnsignedInt(-I64(u64)) : UnsignedInt(u64);
 		
 	++cursor->nextToken;
-	assert(nextChar <= cursor->parseState->string + cursor->nextToken->begin);
+	wavmAssert(nextChar <= cursor->parseState->string + cursor->nextToken->begin);
 
 	return true;
 }
@@ -266,7 +267,7 @@ bool tryParseFloat(CursorState* cursor,Float& outFloat)
 	};
 
 	++cursor->nextToken;
-	assert(nextChar <= cursor->parseState->string + cursor->nextToken->begin);
+	wavmAssert(nextChar <= cursor->parseState->string + cursor->nextToken->begin);
 
 	return true;
 }
@@ -351,37 +352,59 @@ namespace WAST
 
 	V128 parseV128(CursorState* cursor)
 	{
-		const Token* peekToken = cursor->nextToken;
-		while(peekToken->type == t_decimalInt || peekToken->type == t_hexInt)
+		V128 result;
+		switch(cursor->nextToken->type)
 		{
-			++peekToken;
-		};
-	
-		if(peekToken - cursor->nextToken > 16)
-		{
-			parseErrorf(cursor->parseState,cursor->nextToken + 16,"v128.const must not have more than 16 operands");
-			throw RecoverParseException();
-		}
-
-		const Uptr numLanes = peekToken - cursor->nextToken;
-		if(numLanes != 2 && numLanes != 4 && numLanes != 8 && numLanes != 16)
-		{
-			parseErrorf(cursor->parseState,cursor->nextToken,"v128.const must have 2, 4, 8, or 16 operands");
-			throw RecoverParseException();
-		}
-
-		V128 result = {};
-		for(Uptr laneIndex = 0;laneIndex < numLanes;++laneIndex)
-		{
-			switch(numLanes)
+		case t_i8:
+			++cursor->nextToken;
+			for(Uptr laneIndex = 0;laneIndex < 16;++laneIndex)
 			{
-			case 2: result.i64[laneIndex] = parseI64(cursor); break;
-			case 4: result.i32[laneIndex] = parseI32(cursor); break;
-			case 8: result.i16[laneIndex] = parseI16(cursor); break;
-			case 16: result.i8[laneIndex] = parseI8(cursor); break;
-			default: break;
+				result.i8[laneIndex] = parseI8(cursor);
 			}
-		}
+			break;
+		case t_i16:
+			++cursor->nextToken;
+			for(Uptr laneIndex = 0;laneIndex < 8;++laneIndex)
+			{
+				result.i16[laneIndex] = parseI16(cursor);
+			}
+			break;
+		case t_i32:
+			++cursor->nextToken;
+			for(Uptr laneIndex = 0;laneIndex < 4;++laneIndex)
+			{
+				result.i32[laneIndex] = parseI32(cursor);
+			}
+			break;
+		case t_i64:
+			++cursor->nextToken;
+			for(Uptr laneIndex = 0;laneIndex < 2;++laneIndex)
+			{
+				result.i64[laneIndex] = parseI64(cursor);
+			}
+			break;
+		case t_f32:
+			++cursor->nextToken;
+			for(Uptr laneIndex = 0;laneIndex < 4;++laneIndex)
+			{
+				result.f32[laneIndex] = parseF32(cursor);
+			}
+			break;
+		case t_f64:
+			++cursor->nextToken;
+			for(Uptr laneIndex = 0;laneIndex < 2;++laneIndex)
+			{
+				result.f64[laneIndex] = parseF64(cursor);
+			}
+			break;
+		default:
+			parseErrorf(
+				cursor->parseState, cursor->nextToken,
+				"expected 'i8', 'i16', 'i32', 'i64', 'f32', or 'f64'"
+				);
+			throw RecoverParseException();
+		};
+
 		return result;
 	}
 }

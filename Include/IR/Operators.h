@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "IR.h"
 #include "Types.h"
@@ -14,7 +15,7 @@ namespace IR
 
 	struct ControlStructureImm
 	{
-		ResultType resultType;
+		IndexedBlockType type;
 	};
 
 	struct BranchImm
@@ -126,6 +127,7 @@ namespace IR
 	
 	/*
 		Possible signatures used by ENUM_NONCONTROL_NONPARAMETRIC_OPERATORS:
+		NONE : () -> ()
 		NULLARY(T) : () -> T
 		UNARY(T,U) : T -> U
 		BINARY(T,U) : (T,T) -> U
@@ -140,10 +142,10 @@ namespace IR
 	*/
 
 	#define ENUM_NONCONTROL_NONPARAMETRIC_OPERATORS(visitOp) \
-		visitOp(0x01,nop,"nop",NoImm,NULLARY(none),mvp) \
+		visitOp(0x01,nop,"nop",NoImm,NONE,mvp) \
 		\
-		visitOp(0x3f,current_memory,"current_memory",MemoryImm,NULLARY(i32),mvp) \
-		visitOp(0x40,grow_memory,"grow_memory",MemoryImm,UNARY(i32,i32),mvp) \
+		visitOp(0x3f,memory_size,"memory.size",MemoryImm,NULLARY(i32),mvp) \
+		visitOp(0x40,memory_grow,"memory.grow",MemoryImm,UNARY(i32,i32),mvp) \
 		\
 		visitOp(0x28,i32_load,"i32.load",LoadOrStoreImm<2>,LOAD(i32),mvp) \
 		visitOp(0x29,i64_load,"i64.load",LoadOrStoreImm<3>,LOAD(i64),mvp) \
@@ -638,14 +640,14 @@ namespace IR
 		template<typename Visitor>
 		typename Visitor::Result decodeOp(Visitor& visitor)
 		{
-			assert(nextByte + sizeof(Opcode) <= end);
+			wavmAssert(nextByte + sizeof(Opcode) <= end);
 			Opcode opcode = *(Opcode*)nextByte;
 			switch(opcode)
 			{
 			#define VISIT_OPCODE(opcode,name,nameString,Imm,...) \
 				case Opcode::name: \
 				{ \
-					assert(nextByte + sizeof(OpcodeAndImm<Imm>) <= end); \
+					wavmAssert(nextByte + sizeof(OpcodeAndImm<Imm>) <= end); \
 					OpcodeAndImm<Imm>* encodedOperator = (OpcodeAndImm<Imm>*)nextByte; \
 					nextByte += sizeof(OpcodeAndImm<Imm>); \
 					return visitor.name(encodedOperator->imm); \

@@ -1,3 +1,4 @@
+#include "Inline/Assert.h"
 #include "Inline/IntrusiveSharedPtr.h"
 #include "IR/Types.h"
 #include "Platform/Platform.h"
@@ -25,12 +26,12 @@ namespace ThreadTest
 		Runtime::GCPointer<Runtime::Context> context;
 		Runtime::GCPointer<Runtime::FunctionInstance> entryFunction;
 
-		Runtime::Value argument;
+		IR::Value argument;
 
 		FORCENOINLINE Thread(
 			Runtime::Context* inContext,
 			Runtime::FunctionInstance* inEntryFunction,
-			const Runtime::Value& inArgument)
+			const IR::Value& inArgument)
 		: context(inContext)
 		, entryFunction(inEntryFunction)
 		, argument(inArgument)
@@ -48,7 +49,7 @@ namespace ThreadTest
 
 	// A global list of running threads created by WebAssembly code.
 	// Will always contain a null pointer in the first element so that 0 won't be allocated as a thread ID.
-	static Platform::Mutex* threadsMutex = Platform::createMutex();
+	static Platform::Mutex threadsMutex;
 	static std::vector<IntrusiveSharedPtr<Thread>> threads = {{nullptr}};
 	static std::vector<Uptr> freeThreadIds;
 
@@ -60,13 +61,13 @@ namespace ThreadTest
 	FORCENOINLINE static Uptr allocateThreadId(Thread* thread)
 	{
 		Platform::Lock threadsLock(threadsMutex);
-		assert(threads.size() > 0);
+		wavmAssert(threads.size() > 0);
 		if(freeThreadIds.size())
 		{
 			thread->id = freeThreadIds.back();
 			freeThreadIds.pop_back();
 
-			assert(threads[thread->id] == nullptr);
+			wavmAssert(threads[thread->id] == nullptr);
 			threads[thread->id] = thread;
 
 			return thread->id;
@@ -126,7 +127,9 @@ namespace ThreadTest
 
 		// Validate that the entry function wasn't null, and it has the correct type (i32)->i64
 		if(!entryFunction) { throwException(Runtime::Exception::undefinedTableElementType); }
-		else if(Runtime::getFunctionType(entryFunction) != FunctionType::get(ResultType::i64,{ValueType::i32}))
+		else if(Runtime::getFunctionType(entryFunction) != FunctionType(
+			TypeTuple {ValueType::i64},
+			TypeTuple {ValueType::i32}))
 		{
 			throwException(Runtime::Exception::indirectCallSignatureMismatchType);
 		}
@@ -153,7 +156,7 @@ namespace ThreadTest
 		auto compartment = getCompartmentFromContext(oldContext);
 		auto newContext = cloneContext(oldContext,compartment);
 
-		assert(currentThread);
+		wavmAssert(currentThread);
 		Thread* childThread = new Thread(newContext,currentThread->entryFunction,currentThread->argument);
 
 		// Increment the Thread's reference count twice to account for the reference to the Thread on the stack which
@@ -205,7 +208,7 @@ namespace ThreadTest
 		threads[threadId] = nullptr;
 		freeThreadIds.push_back(threadId);
 
-		assert(thread->id == Uptr(threadId));
+		wavmAssert(thread->id == Uptr(threadId));
 		thread->id = UINTPTR_MAX;
 
 		return thread;
@@ -228,6 +231,6 @@ namespace ThreadTest
 
 	ModuleInstance* instantiate(Compartment* compartment)
 	{
-		return Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(threadTest));
+		return Intrinsics::instantiateModule(compartment,INTRINSIC_MODULE_REF(threadTest),"threadTest");
 	}
 }

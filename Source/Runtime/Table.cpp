@@ -1,3 +1,4 @@
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Runtime.h"
 #include "RuntimePrivate.h"
@@ -5,7 +6,7 @@
 namespace Runtime
 {
 	// Global lists of tables; used to query whether an address is reserved by one of them.
-	static Platform::Mutex* tablesMutex = Platform::createMutex();
+	static Platform::Mutex tablesMutex;
 	static std::vector<TableInstance*> tables;
 
 	enum { numGuardPages = 1 };
@@ -29,7 +30,7 @@ namespace Runtime
 		if(!table->baseAddress) { delete table; return nullptr; }
 		
 		// Grow the table to the type's minimum size.
-		assert(type.size.min <= UINTPTR_MAX);
+		wavmAssert(type.size.min <= UINTPTR_MAX);
 		if(growTable(table,Uptr(type.size.min)) == -1) { delete table; return nullptr; }
 
 		// Add the table to the compartment.
@@ -68,16 +69,14 @@ namespace Runtime
 	void TableInstance::finalize()
 	{
 		Platform::Lock compartmentLock(compartment->mutex);
-		assert(compartment->tables[id] == this);
-		assert(compartment->runtimeData->tables[id] == baseAddress);
+		wavmAssert(compartment->tables[id] == this);
+		wavmAssert(compartment->runtimeData->tables[id] == baseAddress);
 		compartment->tables[id] = nullptr;
 		compartment->runtimeData->tables[id] = nullptr;
 	}
 
 	TableInstance::~TableInstance()
 	{
-		Platform::destroyMutex(elementsMutex);
-
 		// Decommit all pages.
 		if(elements.size() > 0) { Platform::decommitVirtualPages((U8*)baseAddress,getNumPlatformPages(elements.size() * sizeof(TableInstance::FunctionElement))); }
 
@@ -117,7 +116,7 @@ namespace Runtime
 		// Look up the new function's code pointer.
 		FunctionInstance* functionInstance = asFunction(newValue);
 		void* nativeFunction = functionInstance->nativeFunction;
-		assert(nativeFunction);
+		wavmAssert(nativeFunction);
 
 		// If the function isn't a WASM function, generate a thunk for it.
 		if(functionInstance->callingConvention != CallingConvention::wasm)
@@ -139,7 +138,7 @@ namespace Runtime
 		const Uptr saturatedIndex = Platform::saturateToBounds(index,table->elements.size());
 
 		// Write the new table element to both the table's elements array and its indirect function call data.
-		table->baseAddress[saturatedIndex].type = functionInstance->type;
+		table->baseAddress[saturatedIndex].typeEncoding = functionInstance->type.getEncoding();
 		table->baseAddress[saturatedIndex].value = nativeFunction;
 
 		auto oldValue = table->elements[saturatedIndex];

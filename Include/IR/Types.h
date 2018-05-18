@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
 #include "Inline/Errors.h"
 #include "Inline/Floats.h"
+#include "Inline/Hash.h"
 #include "IR.h"
 
 #include <vector>
@@ -77,98 +79,165 @@ namespace IR
 		default: Errors::unreachable();
 		};
 	}
+	
+	// The tuple of value types.
+	struct TypeTuple
+	{
+		IR_API TypeTuple();
+		IR_API TypeTuple(ValueType inElem);
+		IR_API TypeTuple(const std::initializer_list<ValueType>& inElems);
+		IR_API TypeTuple(const std::vector<ValueType>& inElems);
 
-	// The type of a WebAssembly operator result. Mostly the same as ValueType, but allows operators with no result (none).
-	enum class ResultType : U8
-	{
-		none = 0,
-		i32 = (U8)ValueType::i32,
-		i64 = (U8)ValueType::i64,
-		f32 = (U8)ValueType::f32,
-		f64 = (U8)ValueType::f64,
-		v128 = (U8)ValueType::v128,
-		num,
-		max = num-1,
-	};
-	
-	inline Uptr getArity(ResultType returnType) { return returnType == ResultType::none ? 0 : 1; }
-	
-	inline const char* asString(ResultType type)
-	{
-		switch(type)
+		const ValueType* begin() const { return impl->elems; }
+		const ValueType* end() const { return impl->elems + impl->numElems; }
+		const ValueType* data() const { return impl->elems; }
+
+		ValueType operator[](Uptr index) const
 		{
-		case ResultType::i32: return "i32";
-		case ResultType::i64: return "i64";
-		case ResultType::f32: return "f32";
-		case ResultType::f64: return "f64";
-		case ResultType::v128: return "v128";
-		case ResultType::none: return "()";
-		default: Errors::unreachable();
+			wavmAssert(index < impl->numElems);
+			return impl->elems[index];
+		}
+
+		Uptr getHash() const { return impl->hash; }
+		Uptr size() const { return impl->numElems; }
+		
+		friend bool operator==(const TypeTuple& left,const TypeTuple& right)
+		{
+			return left.impl == right.impl;
+		}
+		friend bool operator!=(const TypeTuple& left,const TypeTuple& right)
+		{
+			return left.impl != right.impl;
+		}
+
+	private:
+
+		struct Impl
+		{
+			Uptr hash;
+			Uptr numElems;
+			ValueType elems[1];
+
+			Impl(Uptr inNumElems,const ValueType* inElems);
+			Impl(const Impl& inCopy);
+
+			static Uptr calcNumBytes(Uptr numElems)
+			{
+				return sizeof(Impl) + (numElems - 1);
+			}
 		};
-	}
 
-	// Conversion between ValueType and ResultType.
-	inline ValueType asValueType(ResultType type)
-	{
-		assert(type != ResultType::none);
-		return (ValueType)type;
-	}
+		const Impl* impl;
 
-	inline ResultType asResultType(ValueType type)
+		TypeTuple(const Impl* inImpl): impl(inImpl) {}
+	
+		IR_API static const Impl* getUniqueImpl(Uptr numElems, const ValueType* inElems);
+	};
+
+	inline std::string asString(TypeTuple typeTuple)
 	{
-		assert(type != ValueType::any);
-		return (ResultType)type;
+		if(typeTuple.size() == 1)
+		{
+			return asString(typeTuple[0]);
+		}
+		else
+		{
+			std::string result = "(";
+			for(Uptr elementIndex = 0;elementIndex < typeTuple.size();++elementIndex)
+			{
+				if(elementIndex != 0) { result += ", "; }
+				result += asString(typeTuple[elementIndex]);
+			}
+			result += ")";
+			return result;
+		}
 	}
 
 	// Infer value and result types from a C type.
 
-	template<typename> constexpr IR::ValueType inferValueType();
-	template<> constexpr IR::ValueType inferValueType<I32>()  { return IR::ValueType::i32; }
-	template<> constexpr IR::ValueType inferValueType<U32>()  { return IR::ValueType::i32; }
-	template<> constexpr IR::ValueType inferValueType<I64>()  { return IR::ValueType::i64; }
-	template<> constexpr IR::ValueType inferValueType<U64>()  { return IR::ValueType::i64; }
-	template<> constexpr IR::ValueType inferValueType<F32>()  { return IR::ValueType::f32; }
-	template<> constexpr IR::ValueType inferValueType<F64>()  { return IR::ValueType::f64; }
+	template<typename> constexpr ValueType inferValueType();
+	template<> constexpr ValueType inferValueType<I32>()  { return ValueType::i32; }
+	template<> constexpr ValueType inferValueType<U32>()  { return ValueType::i32; }
+	template<> constexpr ValueType inferValueType<I64>()  { return ValueType::i64; }
+	template<> constexpr ValueType inferValueType<U64>()  { return ValueType::i64; }
+	template<> constexpr ValueType inferValueType<F32>()  { return ValueType::f32; }
+	template<> constexpr ValueType inferValueType<F64>()  { return ValueType::f64; }
 
-	template<typename T> constexpr IR::ResultType inferResultType() { return IR::ResultType(inferValueType<T>()); }
-	template<> constexpr IR::ResultType inferResultType<void>() { return IR::ResultType::none; }
+	template<typename T> inline TypeTuple inferResultType() { return TypeTuple(inferValueType<T>()); }
+	template<> inline TypeTuple inferResultType<void>() { return TypeTuple(); }
 
 	// The type of a WebAssembly function
 	struct FunctionType
 	{
-		ResultType ret;
-		std::vector<ValueType> parameters;
+		// Used to represent a function type as an abstract pointer-sized value in the runtime.
+		struct Encoding
+		{
+			Uptr impl;
+		};
 
-		IR_API static const FunctionType* get(ResultType ret,const std::initializer_list<ValueType>& parameters);
-		IR_API static const FunctionType* get(ResultType ret,const std::vector<ValueType>& parameters);
-		IR_API static const FunctionType* get(ResultType ret = ResultType::none);
+		FunctionType(TypeTuple inResults = TypeTuple(),TypeTuple inParams = TypeTuple())
+		: impl(getUniqueImpl(inResults, inParams))
+		{}
+
+		FunctionType(Encoding encoding): impl(reinterpret_cast<const Impl*>(encoding.impl)) {}
+
+		TypeTuple results() const { return impl->results; }
+		TypeTuple params() const { return impl->params; }
+		Uptr getHash() const { return impl->hash; }
+		Encoding getEncoding() const { return Encoding { reinterpret_cast<Uptr>(impl) }; }
+
+		friend bool operator==(const FunctionType& left,const FunctionType& right)
+		{
+			return left.impl == right.impl;
+		}
+
+		friend bool operator!=(const FunctionType& left,const FunctionType& right)
+		{
+			return left.impl != right.impl;
+		}
 
 	private:
+		
+		struct Impl
+		{
+			Uptr hash;
+			TypeTuple results;
+			TypeTuple params;
 
-		FunctionType(ResultType inRet,const std::vector<ValueType>& inParameters)
-		: ret(inRet), parameters(inParameters) {}
+			Impl(TypeTuple inResults, TypeTuple inParams);
+		};
+
+		const Impl* impl;
+	
+		FunctionType(const Impl* inImpl): impl(inImpl) {}
+
+		IR_API static const Impl* getUniqueImpl(TypeTuple results, TypeTuple params);
 	};
 	
 	struct IndexedFunctionType
 	{
-		U32 index;
+		Uptr index;
 	};
 
-	inline std::string asString(const std::vector<ValueType>& typeTuple)
+	struct IndexedBlockType
 	{
-		std::string result = "(";
-		for(Uptr parameterIndex = 0;parameterIndex < typeTuple.size();++parameterIndex)
+		enum Format
 		{
-			if(parameterIndex != 0) { result += ','; }
-			result += asString(typeTuple[parameterIndex]);
-		}
-		result += ")";
-		return result;
-	}
+			noParametersOrResult,
+			oneResult,
+			functionType
+		};
+		Format format;
+		union
+		{
+			ValueType resultType;
+			Uptr index;
+		};
+	};
 
-	inline std::string asString(const FunctionType* functionType)
+	inline std::string asString(const FunctionType& functionType)
 	{
-		return asString(functionType->parameters) + "->" + asString(functionType->ret);
+		return asString(functionType.params()) + "->" + asString(functionType.results());
 	}
 
 	// A size constraint: a range of expected sizes for some size-constrained type.
@@ -186,6 +255,12 @@ namespace IR
 		}
 	};
 	
+	inline std::string asString(const SizeConstraints& sizeConstraints)
+	{
+		return std::to_string(sizeConstraints.min)
+			+ (sizeConstraints.max == UINT64_MAX ? ".." : ".." + std::to_string(sizeConstraints.max));
+	}
+
 	// The type of element a table contains: for now can only be anyfunc, meaning any function type.
 	enum class TableElementType : U8
 	{
@@ -211,6 +286,11 @@ namespace IR
 		{ return super.elementType == sub.elementType && super.isShared == sub.isShared && isSubset(super.size,sub.size); }
 	};
 
+	inline std::string asString(const TableType& tableType)
+	{
+		return asString(tableType.size) + (tableType.isShared ? " shared anyfunc" : " anyfunc");
+	}
+
 	// The type of a memory
 	struct MemoryType
 	{
@@ -224,6 +304,11 @@ namespace IR
 		friend bool operator!=(const MemoryType& left,const MemoryType& right) { return left.isShared != right.isShared || left.size != right.size; }
 		friend bool isSubset(const MemoryType& super,const MemoryType& sub) { return super.isShared == sub.isShared && isSubset(super.size,sub.size); }
 	};
+	
+	inline std::string asString(const MemoryType& memoryType)
+	{
+		return asString(memoryType.size) + (memoryType.isShared ? " shared" : "");
+	}
 
 	// The type of a global
 	struct GlobalType
@@ -246,25 +331,20 @@ namespace IR
 		else { return std::string("immutable ") + asString(globalType.valueType); }
 	}
 	
-	// The type of a tuple
-	struct TupleType
+	struct ExceptionType
 	{
-		std::vector<ValueType> elements;
+		TypeTuple params;
 
-		IR_API static const TupleType* get(const std::initializer_list<ValueType>& elements);
-		IR_API static const TupleType* get(const std::vector<ValueType>& elements);
-
-	private:
-
-		TupleType(const std::vector<ValueType>& inElements)
-			: elements(inElements) {}
+		friend bool operator==(const ExceptionType& left, const ExceptionType& right)
+		{
+			return left.params == right.params;
+		}
+		friend bool operator!=(const ExceptionType& left, const ExceptionType& right)
+		{
+			return left.params != right.params;
+		}
 	};
 
-	inline std::string asString(const TupleType* tupleType)
-	{
-		return asString(tupleType->elements);
-	}
-	
 	// The type of an object
 	enum class ObjectKind : U8
 	{
@@ -282,36 +362,36 @@ namespace IR
 		const ObjectKind kind;
 
 		ObjectType()								: kind(ObjectKind::invalid) {}
-		ObjectType(const FunctionType* inFunction)	: kind(ObjectKind::function), function(inFunction) {}
+		ObjectType(FunctionType inFunction)			: kind(ObjectKind::function), function(inFunction) {}
 		ObjectType(TableType inTable)				: kind(ObjectKind::table), table(inTable) {}
 		ObjectType(MemoryType inMemory)				: kind(ObjectKind::memory), memory(inMemory) {}
 		ObjectType(GlobalType inGlobal)				: kind(ObjectKind::global), global(inGlobal) {}
-		ObjectType(const TupleType* inExceptionType): kind(ObjectKind::exceptionType), exceptionType(inExceptionType) {}
+		ObjectType(ExceptionType inExceptionType)	: kind(ObjectKind::exceptionType), exceptionType(inExceptionType) {}
 		ObjectType(ObjectKind inKind)				: kind(inKind) {}
 
-		friend const FunctionType* asFunctionType(const ObjectType& objectType)
+		friend FunctionType asFunctionType(const ObjectType& objectType)
 		{
-			assert(objectType.kind == ObjectKind::function);
+			wavmAssert(objectType.kind == ObjectKind::function);
 			return objectType.function;
 		}
 		friend TableType asTableType(const ObjectType& objectType)
 		{
-			assert(objectType.kind == ObjectKind::table);
+			wavmAssert(objectType.kind == ObjectKind::table);
 			return objectType.table;
 		}
 		friend MemoryType asMemoryType(const ObjectType& objectType)
 		{
-			assert(objectType.kind == ObjectKind::memory);
+			wavmAssert(objectType.kind == ObjectKind::memory);
 			return objectType.memory;
 		}
 		friend GlobalType asGlobalType(const ObjectType& objectType)
 		{
-			assert(objectType.kind == ObjectKind::global);
+			wavmAssert(objectType.kind == ObjectKind::global);
 			return objectType.global;
 		}
-		friend const TupleType* asExceptionTypeType(const ObjectType& objectType)
+		friend ExceptionType asExceptionType(const ObjectType& objectType)
 		{
-			assert(objectType.kind == ObjectKind::exceptionType);
+			wavmAssert(objectType.kind == ObjectKind::exceptionType);
 			return objectType.exceptionType;
 		}
 
@@ -319,11 +399,11 @@ namespace IR
 
 		union
 		{
-			const FunctionType* function;
+			FunctionType function;
 			TableType table;
 			MemoryType memory;
 			GlobalType global;
-			const TupleType* exceptionType;
+			ExceptionType exceptionType;
 		};
 	};
 
@@ -332,11 +412,28 @@ namespace IR
 		switch(objectType.kind)
 		{
 		case ObjectKind::function: return "func " + asString(asFunctionType(objectType));
-		case ObjectKind::table: return "table";
-		case ObjectKind::memory: return "memory";
+		case ObjectKind::table: return "table " + asString(asTableType(objectType));
+		case ObjectKind::memory: return "memory " + asString(asMemoryType(objectType));
 		case ObjectKind::global: return asString(asGlobalType(objectType));
-		case ObjectKind::exceptionType: return "exception_type " + asString(asExceptionTypeType(objectType));
+		case ObjectKind::exceptionType: return "exception_type " + asString(asExceptionType(objectType));
 		default: Errors::unreachable();
 		};
 	}
 }
+
+template<> struct Hash<IR::TypeTuple>
+{
+	Uptr operator()(IR::TypeTuple typeTuple, Uptr seed = 0) const
+	{
+		return Hash<Uptr>()(typeTuple.getHash(), seed);
+	}
+};
+
+template<> struct Hash<IR::FunctionType>
+{
+	Uptr operator()(IR::FunctionType functionType, Uptr seed = 0) const
+	{
+		return Hash<Uptr>()(functionType.getHash(), seed);
+	}
+};
+

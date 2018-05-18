@@ -22,7 +22,7 @@ namespace Emscripten
 		GCPointer<MemoryInstance> emscriptenMemory;
 	};
 
-	EMSCRIPTEN_API Instance* instantiate(Compartment* compartment);
+	EMSCRIPTEN_API Instance* instantiate(Compartment* compartment, const IR::Module& module);
 	EMSCRIPTEN_API void initializeGlobals(Context* context,const IR::Module& module,ModuleInstance* moduleInstance);
-	EMSCRIPTEN_API void injectCommandArgs(Emscripten::Instance* instance,const std::vector<const char*>& argStrings,std::vector<Value>& outInvokeArgs);
+	EMSCRIPTEN_API void injectCommandArgs(Emscripten::Instance* instance,const std::vector<const char*>& argStrings,std::vector<IR::Value>& outInvokeArgs);
 }

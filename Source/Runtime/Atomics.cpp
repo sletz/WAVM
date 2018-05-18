@@ -1,4 +1,6 @@
+#include "Inline/Assert.h"
 #include "Inline/BasicTypes.h"
+#include "Inline/HashMap.h"
 #include "Logging/Logging.h"
 #include "Intrinsics.h"
 #include "RuntimePrivate.h"
@@ -13,12 +15,11 @@
 // are waiting on a specific address.
 struct WaitList
 {
-	Platform::Mutex* mutex;
+	Platform::Mutex mutex;
 	std::vector<Platform::Event*> wakeEvents;
 	std::atomic<Uptr> numReferences;
 
-	WaitList(): mutex(Platform::createMutex()), numReferences(1) {}
-	~WaitList() { destroyMutex(mutex); }
+	WaitList(): numReferences(1) {}
 };
 
 // Define a unique_ptr to a Platform::Event.
@@ -32,8 +33,8 @@ typedef std::unique_ptr<Platform::Event,EventDeleter> UniqueEventPtr;
 thread_local UniqueEventPtr threadWakeEvent = nullptr;
 
 // A map from address to a list of threads waiting on that address.
-static Platform::Mutex* addressToWaitListMapMutex = Platform::createMutex();
-static std::map<Uptr,WaitList*> addressToWaitListMap;
+static Platform::Mutex addressToWaitListMapMutex;
+static HashMap<Uptr,WaitList*> addressToWaitListMap;
 
 // Opens the wait list for a given address.
 // Increases the wait list's reference count, and returns a pointer to it.
@@ -42,16 +43,16 @@ static std::map<Uptr,WaitList*> addressToWaitListMap;
 static WaitList* openWaitList(Uptr address)
 {
 	Platform::Lock mapLock(addressToWaitListMapMutex);
-	auto mapIt = addressToWaitListMap.find(address);
-	if(mapIt != addressToWaitListMap.end())
+	auto waitListPtr = addressToWaitListMap.get(address);
+	if(waitListPtr)
 	{
-		++mapIt->second->numReferences;
-		return mapIt->second;
+		++(*waitListPtr)->numReferences;
+		return *waitListPtr;
 	}
 	else
 	{
 		WaitList* waitList = new WaitList();
-		addressToWaitListMap.emplace(address,waitList);
+		addressToWaitListMap.set(address,waitList);
 		return waitList;
 	}
 }
@@ -64,9 +65,9 @@ static void closeWaitList(Uptr address,WaitList* waitList)
 		Platform::Lock mapLock(addressToWaitListMapMutex);
 		if(!waitList->numReferences)
 		{
-			assert(!waitList->wakeEvents.size());
+			wavmAssert(!waitList->wakeEvents.size());
 			delete waitList;
-			addressToWaitListMap.erase(address);
+			addressToWaitListMap.remove(address);
 		}
 	}
 }
